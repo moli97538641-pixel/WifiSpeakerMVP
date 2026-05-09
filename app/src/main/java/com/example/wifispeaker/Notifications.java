@@ -22,7 +22,9 @@ final class Notifications {
                     NotificationManager.IMPORTANCE_LOW
             );
             channel.setDescription("WiFi audio streaming status");
-            nm.createNotificationChannel(channel);
+            if (nm != null) {
+                nm.createNotificationChannel(channel);
+            }
         }
     }
 
