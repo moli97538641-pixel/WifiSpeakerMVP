@@ -1,6 +1,8 @@
 package com.example.wifispeaker;
 
+import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
@@ -17,6 +19,7 @@ import android.os.Process;
 import android.util.Log;
 
 import java.io.DataOutputStream;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -32,6 +35,7 @@ public class SenderService extends Service {
     private static final int NOTIFICATION_ID = 2001;
     private static final int SAMPLE_RATE = 48000;
     private static final int CHANNEL_COUNT = 2;
+    private static final int RECONNECT_DELAY_MS = 1200;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread worker;
@@ -57,7 +61,7 @@ public class SenderService extends Service {
             return START_NOT_STICKY;
         }
 
-        startForegroundNow("发送到 " + host + ":" + Protocol.PORT);
+        startForegroundNow("准备发送到 " + host + ":" + Protocol.PORT);
         stopCurrentWorker();
         running.set(true);
         worker = new Thread(() -> runCaptureLoop(host.trim(), resultCode, resultData), "wifi-speaker-sender");
@@ -77,64 +81,51 @@ public class SenderService extends Service {
         }
     }
 
+    private void updateNotification(String text) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.notify(NOTIFICATION_ID, Notifications.build(this, "WiFi Speaker 发送端", text));
+            }
+        } catch (Exception ignored) {}
+    }
+
     private void runCaptureLoop(String host, int resultCode, Intent resultData) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
+        DataOutputStream out = null;
         try {
-            MediaProjectionManager mgr = getSystemService(MediaProjectionManager.class);
-            projection = mgr.getMediaProjection(resultCode, resultData);
-            if (projection == null) throw new IllegalStateException("MediaProjection is null");
-            projection.registerCallback(new MediaProjection.Callback() {
-                @Override
-                public void onStop() {
-                    Log.w(TAG, "MediaProjection stopped by system/user");
-                    running.set(false);
-                    stopSelf();
-                }
-            }, new Handler(Looper.getMainLooper()));
-
-            AudioPlaybackCaptureConfiguration captureConfig = new AudioPlaybackCaptureConfiguration.Builder(projection)
-                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                    .build();
-
-            AudioFormat format = new AudioFormat.Builder()
-                    .setSampleRate(SAMPLE_RATE)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                    .build();
-
-            int minBytes = AudioRecord.getMinBufferSize(
-                    SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_STEREO,
-                    AudioFormat.ENCODING_PCM_16BIT
-            );
-            int bufferBytes = Math.max(minBytes * 2, 16 * 1024);
-
-            recorder = new AudioRecord.Builder()
-                    .setAudioPlaybackCaptureConfig(captureConfig)
-                    .setAudioFormat(format)
-                    .setBufferSizeInBytes(bufferBytes)
-                    .build();
-
-            socket = new Socket();
-            socket.setTcpNoDelay(true);
-            socket.connect(new InetSocketAddress(host, Protocol.PORT), 5000);
-            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            Protocol.writeHeader(out, SAMPLE_RATE, CHANNEL_COUNT, Protocol.PCM_16_BIT);
-
-            byte[] buffer = new byte[bufferBytes];
+            prepareAudioCapture(resultCode, resultData);
+            byte[] buffer = new byte[getBufferBytes()];
             recorder.startRecording();
+
             while (running.get() && !Thread.currentThread().isInterrupted()) {
+                if (out == null) {
+                    out = connectAndWriteHeader(host);
+                    if (out == null) {
+                        sleepQuietly(RECONNECT_DELAY_MS);
+                        continue;
+                    }
+                }
+
                 int n = recorder.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING);
                 if (n > 0) {
-                    out.write(buffer, 0, n);
+                    try {
+                        out.write(buffer, 0, n);
+                    } catch (IOException e) {
+                        Log.w(TAG, "Write failed, will reconnect", e);
+                        closeSocketQuietly();
+                        out = null;
+                        updateNotification("连接断开，正在重连 " + host + ":" + Protocol.PORT);
+                        sleepQuietly(RECONNECT_DELAY_MS);
+                    }
                 } else if (n < 0) {
                     Log.w(TAG, "AudioRecord read returned " + n);
                     break;
                 }
             }
-            out.flush();
+            if (out != null) {
+                try { out.flush(); } catch (Exception ignored) {}
+            }
         } catch (Exception e) {
             Log.e(TAG, "Sender failed", e);
         } finally {
@@ -144,10 +135,85 @@ public class SenderService extends Service {
         }
     }
 
+    private void prepareAudioCapture(int resultCode, Intent resultData) {
+        MediaProjectionManager mgr = getSystemService(MediaProjectionManager.class);
+        projection = mgr.getMediaProjection(resultCode, resultData);
+        if (projection == null) throw new IllegalStateException("MediaProjection is null");
+        projection.registerCallback(new MediaProjection.Callback() {
+            @Override
+            public void onStop() {
+                Log.w(TAG, "MediaProjection stopped by system/user");
+                running.set(false);
+                stopSelf();
+            }
+        }, new Handler(Looper.getMainLooper()));
+
+        AudioPlaybackCaptureConfiguration captureConfig = new AudioPlaybackCaptureConfiguration.Builder(projection)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                .build();
+
+        AudioFormat format = new AudioFormat.Builder()
+                .setSampleRate(SAMPLE_RATE)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                .build();
+
+        recorder = new AudioRecord.Builder()
+                .setAudioPlaybackCaptureConfig(captureConfig)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(getBufferBytes())
+                .build();
+    }
+
+    private int getBufferBytes() {
+        int minBytes = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_STEREO,
+                AudioFormat.ENCODING_PCM_16BIT
+        );
+        return Math.max(minBytes * 2, 16 * 1024);
+    }
+
+    private DataOutputStream connectAndWriteHeader(String host) {
+        closeSocketQuietly();
+        Socket s = new Socket();
+        try {
+            s.setTcpNoDelay(true);
+            s.connect(new InetSocketAddress(host, Protocol.PORT), 3000);
+            DataOutputStream out = new DataOutputStream(s.getOutputStream());
+            Protocol.writeHeader(out, SAMPLE_RATE, CHANNEL_COUNT, Protocol.PCM_16_BIT);
+            socket = s;
+            updateNotification("正在发送到 " + host + ":" + Protocol.PORT);
+            return out;
+        } catch (Exception e) {
+            try { s.close(); } catch (Exception ignored) {}
+            Log.w(TAG, "Connect failed, will retry: " + host, e);
+            updateNotification("连接失败，正在重试 " + host + ":" + Protocol.PORT);
+            return null;
+        }
+    }
+
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void stopCurrentWorker() {
         running.set(false);
         if (worker != null) worker.interrupt();
         closeQuietly();
+    }
+
+    private void closeSocketQuietly() {
+        try {
+            if (socket != null) socket.close();
+        } catch (Exception ignored) {}
+        socket = null;
     }
 
     private void closeQuietly() {
@@ -159,10 +225,7 @@ public class SenderService extends Service {
         } catch (Exception ignored) {}
         recorder = null;
 
-        try {
-            if (socket != null) socket.close();
-        } catch (Exception ignored) {}
-        socket = null;
+        closeSocketQuietly();
 
         MediaProjection p = projection;
         projection = null;

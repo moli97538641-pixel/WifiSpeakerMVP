@@ -9,7 +9,8 @@ import android.content.SharedPreferences;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -28,14 +29,19 @@ public class MainActivity extends Activity {
 
     private EditText hostInput;
     private TextView ipText;
-    private TextView hintText;
+    private TextView statusText;
+    private Button discoverButton;
     private MediaProjectionManager projectionManager;
+    private Handler mainHandler;
+    private volatile boolean discovering = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        mainHandler = new Handler(Looper.getMainLooper());
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         Notifications.ensureChannel(this);
+        requestNotificationPermissionIfNeeded();
         requestRecordAudioPermissionIfNeeded();
         buildUi();
     }
@@ -54,14 +60,14 @@ public class MainActivity extends Activity {
         root.setGravity(Gravity.CENTER_HORIZONTAL);
 
         TextView title = new TextView(this);
-        title.setText("WiFi Speaker MVP");
+        title.setText("WiFi Speaker MVP v0.2");
         title.setTextSize(25);
         title.setGravity(Gravity.CENTER);
         title.setPadding(0, 0, 0, dp(10));
         root.addView(title, matchWrap());
 
         TextView subtitle = new TextView(this);
-        subtitle.setText("同一个 App：平板点“启动接收端”，手机填平板 IP 后点“启动发送端”。\n音频格式：48kHz / 16bit / stereo PCM，局域网 TCP 直传。");
+        subtitle.setText("平板启动接收端后，手机可以点“搜索平板”自动填 IP；如果 Wi-Fi 断开后恢复，发送端会自动重连。\n音频格式：48kHz / 16bit / stereo PCM，局域网 TCP 直传。");
         subtitle.setTextSize(15);
         subtitle.setPadding(0, 0, 0, dp(16));
         root.addView(subtitle, matchWrap());
@@ -91,9 +97,14 @@ public class MainActivity extends Activity {
 
         hostInput = new EditText(this);
         hostInput.setSingleLine(true);
-        hostInput.setHint("输入平板 IP，例如 192.168.1.23");
+        hostInput.setHint("平板 IP，可手动填，也可点下面自动搜索");
         hostInput.setText(getPrefs().getString(KEY_LAST_HOST, ""));
         root.addView(hostInput, matchWrap());
+
+        discoverButton = new Button(this);
+        discoverButton.setText("搜索平板 / Auto discover");
+        discoverButton.setOnClickListener(v -> startDiscovery(false));
+        root.addView(discoverButton, matchWrap());
 
         Button startSender = new Button(this);
         startSender.setText("手机：启动发送端 / Push audio");
@@ -105,11 +116,17 @@ public class MainActivity extends Activity {
         stopSender.setOnClickListener(v -> stopService(new Intent(this, SenderService.class).setAction(SenderService.ACTION_STOP)));
         root.addView(stopSender, matchWrap());
 
+        statusText = new TextView(this);
+        statusText.setTextSize(14);
+        statusText.setPadding(0, dp(8), 0, dp(4));
+        statusText.setText("状态：等待操作");
+        root.addView(statusText, matchWrap());
+
         addDivider(root);
 
-        hintText = new TextView(this);
+        TextView hintText = new TextView(this);
         hintText.setTextSize(14);
-        hintText.setText("注意：发送端需要 Android 10+。某些 App 会禁止被录制，通话/DRM/受保护内容通常采不到。首次启动请允许“录音/麦克风”权限；点发送端后还会弹出系统投屏/录制授权，这是 Android 对播放音频采集的要求。");
+        hintText.setText("注意：发送端需要 Android 10+。某些 App 会禁止被录制，通话/DRM/受保护内容通常采不到。首次启动请允许“录音/麦克风”权限；点发送端后还会弹出系统投屏/录制授权，这是 Android 对播放音频采集的要求。自动搜索要求两台设备在同一个 Wi-Fi，部分访客网络/AP 隔离网络会搜不到。");
         root.addView(hintText, matchWrap());
 
         ScrollView scroll = new ScrollView(this);
@@ -121,14 +138,15 @@ public class MainActivity extends Activity {
     private void refreshIpText() {
         if (ipText != null) {
             String ip = WifiUtils.getLikelyLanIpAddress();
-            ipText.setText("本机局域网 IP：" + ip + "\n接收端端口：" + Protocol.PORT);
+            ipText.setText("本机局域网 IP：" + ip + "\n音频端口：" + Protocol.PORT + "    发现端口：" + Discovery.DISCOVERY_PORT);
         }
     }
 
     private void startReceiverService() {
         Intent intent = new Intent(this, ReceiverService.class).setAction(ReceiverService.ACTION_START);
         startCompatService(intent);
-        Toast.makeText(this, "接收端已启动，请在发送端填写这里显示的 IP", Toast.LENGTH_LONG).show();
+        setStatus("接收端已启动。手机端可点“搜索平板”自动发现，也可手动输入这里显示的 IP。");
+        Toast.makeText(this, "接收端已启动", Toast.LENGTH_LONG).show();
     }
 
     private void requestProjectionAndStartSender() {
@@ -143,11 +161,59 @@ public class MainActivity extends Activity {
         }
         String host = hostInput.getText().toString().trim();
         if (host.isEmpty()) {
-            Toast.makeText(this, "先输入平板接收端 IP", Toast.LENGTH_SHORT).show();
+            startDiscovery(true);
             return;
         }
+        beginProjectionRequest(host);
+    }
+
+    private void beginProjectionRequest(String host) {
+        host = host == null ? "" : host.trim();
+        if (host.isEmpty()) {
+            Toast.makeText(this, "没有可用的平板 IP", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        hostInput.setText(host);
         getPrefs().edit().putString(KEY_LAST_HOST, host).apply();
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION);
+    }
+
+    private void startDiscovery(boolean startSenderAfterFound) {
+        if (discovering) {
+            Toast.makeText(this, "正在搜索，请稍等", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        discovering = true;
+        if (discoverButton != null) discoverButton.setEnabled(false);
+        setStatus("正在搜索同一 Wi-Fi 下的接收端...");
+
+        new Thread(() -> {
+            Discovery.Device device = null;
+            Exception error = null;
+            try {
+                device = Discovery.findFirstReceiver(3000);
+            } catch (Exception e) {
+                error = e;
+            }
+            Discovery.Device finalDevice = device;
+            Exception finalError = error;
+            mainHandler.post(() -> {
+                discovering = false;
+                if (discoverButton != null) discoverButton.setEnabled(true);
+                if (finalDevice != null) {
+                    hostInput.setText(finalDevice.host);
+                    getPrefs().edit().putString(KEY_LAST_HOST, finalDevice.host).apply();
+                    setStatus("已发现接收端：" + finalDevice.name + " / " + finalDevice.host);
+                    Toast.makeText(this, "找到平板：" + finalDevice.host, Toast.LENGTH_SHORT).show();
+                    if (startSenderAfterFound) beginProjectionRequest(finalDevice.host);
+                } else {
+                    String msg = "没有搜到接收端。请确认平板已点“启动接收端”，并且两台设备在同一个 Wi-Fi。";
+                    if (finalError != null) msg += " 错误：" + finalError.getClass().getSimpleName();
+                    setStatus(msg);
+                    Toast.makeText(this, "没有搜到平板", Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "wifi-speaker-discovery-ui").start();
     }
 
     @Override
@@ -164,6 +230,7 @@ public class MainActivity extends Activity {
             service.putExtra(SenderService.EXTRA_RESULT_CODE, resultCode);
             service.putExtra(SenderService.EXTRA_RESULT_DATA, data);
             startCompatService(service);
+            setStatus("发送端已启动：" + host + "。如果网络短暂断开，服务会自动重连。") ;
             Toast.makeText(this, "发送端已启动", Toast.LENGTH_SHORT).show();
         }
     }
@@ -177,7 +244,8 @@ public class MainActivity extends Activity {
     }
 
     private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
         }
     }
@@ -192,6 +260,10 @@ public class MainActivity extends Activity {
                 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
         }
+    }
+
+    private void setStatus(String text) {
+        if (statusText != null) statusText.setText("状态：" + text);
     }
 
     private SharedPreferences getPrefs() {

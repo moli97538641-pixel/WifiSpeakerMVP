@@ -1,18 +1,22 @@
 package com.example.wifispeaker;
 
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
-import android.media.AudioManager;
 import android.media.AudioTrack;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.Process;
 import android.util.Log;
 
 import java.io.DataInputStream;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,9 +30,12 @@ public class ReceiverService extends Service {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread worker;
+    private Thread discoveryWorker;
     private ServerSocket serverSocket;
+    private DatagramSocket discoverySocket;
     private Socket clientSocket;
     private AudioTrack audioTrack;
+    private WifiManager.MulticastLock multicastLock;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -43,6 +50,9 @@ public class ReceiverService extends Service {
         startForegroundNow("等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT);
         stopCurrentWorker();
         running.set(true);
+        acquireMulticastLock();
+        discoveryWorker = new Thread(this::runDiscoveryResponder, "wifi-speaker-discovery-responder");
+        discoveryWorker.start();
         worker = new Thread(this::runServerLoop, "wifi-speaker-receiver");
         worker.start();
         return START_STICKY;
@@ -63,14 +73,19 @@ public class ReceiverService extends Service {
     private void runServerLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         try {
-            serverSocket = new ServerSocket(Protocol.PORT);
+            serverSocket = new ServerSocket();
             serverSocket.setReuseAddress(true);
+            serverSocket.bind(new InetSocketAddress(Protocol.PORT));
             while (running.get() && !Thread.currentThread().isInterrupted()) {
                 Socket socket = serverSocket.accept();
                 clientSocket = socket;
                 socket.setTcpNoDelay(true);
+                startForegroundNow("已连接：" + socket.getInetAddress().getHostAddress());
                 handleClient(socket);
                 closeClientQuietly();
+                if (running.get()) {
+                    startForegroundNow("等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT);
+                }
             }
         } catch (Exception e) {
             if (running.get()) Log.e(TAG, "Receiver failed", e);
@@ -129,9 +144,64 @@ public class ReceiverService extends Service {
         }
     }
 
+    private void runDiscoveryResponder() {
+        try {
+            discoverySocket = new DatagramSocket(null);
+            discoverySocket.setReuseAddress(true);
+            discoverySocket.bind(new InetSocketAddress(Discovery.DISCOVERY_PORT));
+            byte[] buffer = new byte[512];
+            while (running.get() && !Thread.currentThread().isInterrupted()) {
+                DatagramPacket request = new DatagramPacket(buffer, buffer.length);
+                discoverySocket.receive(request);
+                if (!Discovery.isRequest(request.getData(), request.getLength())) continue;
+
+                String ip = WifiUtils.getLikelyLanIpAddress();
+                String name = Build.MANUFACTURER + " " + Build.MODEL;
+                byte[] response = Discovery.responseBytes(ip, name);
+                DatagramPacket reply = new DatagramPacket(
+                        response,
+                        response.length,
+                        request.getAddress(),
+                        request.getPort()
+                );
+                discoverySocket.send(reply);
+            }
+        } catch (Exception e) {
+            if (running.get()) Log.e(TAG, "Discovery responder failed", e);
+        } finally {
+            try {
+                if (discoverySocket != null) discoverySocket.close();
+            } catch (Exception ignored) {}
+            discoverySocket = null;
+        }
+    }
+
+    private void acquireMulticastLock() {
+        try {
+            WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifiManager != null) {
+                multicastLock = wifiManager.createMulticastLock("wifi-speaker-discovery");
+                multicastLock.setReferenceCounted(false);
+                multicastLock.acquire();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to acquire multicast lock", e);
+        }
+    }
+
+    private void releaseMulticastLock() {
+        try {
+            if (multicastLock != null && multicastLock.isHeld()) {
+                multicastLock.release();
+            }
+        } catch (Exception ignored) {}
+        multicastLock = null;
+    }
+
     private void stopCurrentWorker() {
         running.set(false);
         if (worker != null) worker.interrupt();
+        if (discoveryWorker != null) discoveryWorker.interrupt();
         closeQuietly();
     }
 
@@ -156,6 +226,12 @@ public class ReceiverService extends Service {
             if (serverSocket != null) serverSocket.close();
         } catch (Exception ignored) {}
         serverSocket = null;
+
+        try {
+            if (discoverySocket != null) discoverySocket.close();
+        } catch (Exception ignored) {}
+        discoverySocket = null;
+        releaseMulticastLock();
     }
 
     @Override
