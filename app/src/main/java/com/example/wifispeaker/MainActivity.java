@@ -17,6 +17,8 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -126,18 +128,31 @@ public class MainActivity extends Activity {
     }
 
     private void configureSystemBars() {
-        // v0.3.1: keep the Android system status/notification bar and navigation bar visible.
-        // This avoids the app content drawing under the top system bar on devices that apply
-        // edge-to-edge defaults or vendor fullscreen behaviors.
+        // v0.3.2: Android 15 / targetSdk 35 may force edge-to-edge drawing.
+        // Do not rely only on decorFitsSystemWindows. We keep system bars visible,
+        // then add runtime WindowInsets padding to every screen root in wrapScroll().
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            getWindow().setDecorFitsSystemWindows(true);
+            getWindow().setDecorFitsSystemWindows(false);
         }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             getWindow().setStatusBarColor(0xFFFFFFFF);
             getWindow().setNavigationBarColor(0xFFFFFFFF);
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsAppearance(
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                                | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                );
+            }
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
@@ -182,7 +197,7 @@ public class MainActivity extends Activity {
         clearViewRefs();
 
         LinearLayout root = baseRoot();
-        TextView title = titleText("WiFi Speaker MVP v0.3.1");
+        TextView title = titleText("WiFi Speaker MVP v0.3.2");
         root.addView(title, matchWrap());
 
         TextView subtitle = bodyText("请选择这台 Android 设备当前要扮演的角色：接收端负责播放收到的音频，发送端负责采集并推送本机播放音频。");
@@ -607,12 +622,36 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(pad, pad, pad, pad);
         root.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.setBackgroundColor(0xFFFFFFFF);
         return root;
     }
 
     private ScrollView wrapScroll(LinearLayout root) {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setClipToPadding(false);
+        scroll.setBackgroundColor(0xFFFFFFFF);
         scroll.addView(root);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            final int basePad = dp(18);
+            scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+                int topInset = 0;
+                int bottomInset = 0;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+                    topInset = bars.top;
+                    bottomInset = bars.bottom;
+                } else {
+                    topInset = insets.getSystemWindowInsetTop();
+                    bottomInset = insets.getSystemWindowInsetBottom();
+                }
+                root.setPadding(basePad, basePad + topInset, basePad, basePad + bottomInset);
+                return insets;
+            });
+            scroll.post(scroll::requestApplyInsets);
+        }
+
         return scroll;
     }
 
