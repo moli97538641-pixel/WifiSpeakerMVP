@@ -28,6 +28,7 @@ public class ReceiverService extends Service {
     static final String EXTRA_RUNNING = "running";
     static final String EXTRA_CONNECTED = "connected";
     static final String EXTRA_MESSAGE = "message";
+    static final String EXTRA_VOLUME_PERCENT = "volume_percent";
 
     private static final String TAG = "WifiSpeakerReceiver";
     private static final int NOTIFICATION_ID = 2002;
@@ -35,15 +36,19 @@ public class ReceiverService extends Service {
     static volatile boolean sRunning = false;
     static volatile boolean sConnected = false;
     static volatile String sMessage = "未启动";
+    static volatile int sVolumePercent = 100;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread worker;
     private Thread discoveryWorker;
+    private Thread controlWorker;
     private ServerSocket serverSocket;
+    private ServerSocket controlServerSocket;
     private DatagramSocket discoverySocket;
     private Socket clientSocket;
     private AudioTrack audioTrack;
     private WifiManager.MulticastLock multicastLock;
+    private volatile int currentVolumePercent = 100;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -56,6 +61,7 @@ public class ReceiverService extends Service {
         }
         if (!ACTION_START.equals(action)) return START_NOT_STICKY;
 
+        currentVolumePercent = sVolumePercent;
         String waitMessage = "等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT;
         startForegroundNow(waitMessage);
         stopCurrentWorker(false);
@@ -64,6 +70,8 @@ public class ReceiverService extends Service {
         acquireMulticastLock();
         discoveryWorker = new Thread(this::runDiscoveryResponder, "wifi-speaker-discovery-responder");
         discoveryWorker.start();
+        controlWorker = new Thread(this::runControlServer, "wifi-speaker-volume-control");
+        controlWorker.start();
         worker = new Thread(this::runServerLoop, "wifi-speaker-receiver");
         worker.start();
         return START_STICKY;
@@ -90,6 +98,7 @@ public class ReceiverService extends Service {
         intent.putExtra(EXTRA_RUNNING, sRunning);
         intent.putExtra(EXTRA_CONNECTED, sConnected);
         intent.putExtra(EXTRA_MESSAGE, sMessage);
+        intent.putExtra(EXTRA_VOLUME_PERCENT, sVolumePercent);
         sendBroadcast(intent);
     }
 
@@ -159,6 +168,7 @@ public class ReceiverService extends Service {
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build();
 
+        applyPlaybackVolume();
         audioTrack.play();
         byte[] buffer = new byte[16 * 1024];
         while (running.get() && !Thread.currentThread().isInterrupted()) {
@@ -172,6 +182,53 @@ public class ReceiverService extends Service {
                     written += ret;
                 }
             }
+        }
+    }
+
+    private void runControlServer() {
+        try {
+            controlServerSocket = new ServerSocket();
+            controlServerSocket.setReuseAddress(true);
+            controlServerSocket.bind(new InetSocketAddress(Protocol.CONTROL_PORT));
+            while (running.get() && !Thread.currentThread().isInterrupted()) {
+                Socket controlSocket = controlServerSocket.accept();
+                try {
+                    controlSocket.setSoTimeout(2000);
+                    DataInputStream in = new DataInputStream(controlSocket.getInputStream());
+                    int volumePercent = Protocol.readVolumeCommand(in);
+                    setReceiverVolumePercent(volumePercent, "发送端已设置接收端应用内音量：" + volumePercent + "%");
+                } catch (Exception e) {
+                    if (running.get()) Log.w(TAG, "Bad volume control command", e);
+                } finally {
+                    try { controlSocket.close(); } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception e) {
+            if (running.get()) Log.e(TAG, "Volume control server failed", e);
+        } finally {
+            try {
+                if (controlServerSocket != null) controlServerSocket.close();
+            } catch (Exception ignored) {}
+            controlServerSocket = null;
+        }
+    }
+
+    private void setReceiverVolumePercent(int volumePercent, String message) {
+        currentVolumePercent = Protocol.clampVolume(volumePercent);
+        sVolumePercent = currentVolumePercent;
+        applyPlaybackVolume();
+        if (message != null) {
+            publishState(sRunning, sConnected, message);
+        }
+    }
+
+    private void applyPlaybackVolume() {
+        AudioTrack track = audioTrack;
+        if (track == null) return;
+        try {
+            track.setVolume(currentVolumePercent / 100.0f);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to apply playback volume", e);
         }
     }
 
@@ -233,6 +290,7 @@ public class ReceiverService extends Service {
         running.set(false);
         if (worker != null) worker.interrupt();
         if (discoveryWorker != null) discoveryWorker.interrupt();
+        if (controlWorker != null) controlWorker.interrupt();
         closeQuietly();
         if (publishStopped) publishState(false, false, "已停止接收端");
     }
@@ -258,6 +316,11 @@ public class ReceiverService extends Service {
             if (serverSocket != null) serverSocket.close();
         } catch (Exception ignored) {}
         serverSocket = null;
+
+        try {
+            if (controlServerSocket != null) controlServerSocket.close();
+        } catch (Exception ignored) {}
+        controlServerSocket = null;
 
         try {
             if (discoverySocket != null) discoverySocket.close();

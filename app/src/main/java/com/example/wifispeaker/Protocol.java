@@ -7,7 +7,10 @@ import java.nio.charset.StandardCharsets;
 
 final class Protocol {
     static final int PORT = 45777;
+    static final int CONTROL_PORT = 45779;
     private static final byte[] MAGIC = "WSPK0001".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] CONTROL_MAGIC = "WSPKCTRL".getBytes(StandardCharsets.US_ASCII);
+    private static final int CONTROL_TYPE_VOLUME = 1;
     static final int PCM_16_BIT = 16;
 
     private Protocol() {}
@@ -41,6 +44,35 @@ final class Protocol {
             throw new IOException("Unsupported PCM depth: " + bitsPerSample);
         }
         return new Header(sampleRate, channelCount, bitsPerSample);
+    }
+
+    static void writeVolumeCommand(DataOutputStream out, int volumePercent) throws IOException {
+        int clamped = clampVolume(volumePercent);
+        out.write(CONTROL_MAGIC);
+        out.writeInt(CONTROL_TYPE_VOLUME);
+        out.writeInt(clamped);
+        out.flush();
+    }
+
+    static int readVolumeCommand(DataInputStream in) throws IOException {
+        byte[] magic = new byte[CONTROL_MAGIC.length];
+        in.readFully(magic);
+        for (int i = 0; i < CONTROL_MAGIC.length; i++) {
+            if (magic[i] != CONTROL_MAGIC[i]) {
+                throw new IOException("Bad control magic");
+            }
+        }
+        int type = in.readInt();
+        if (type != CONTROL_TYPE_VOLUME) {
+            throw new IOException("Unsupported control type: " + type);
+        }
+        return clampVolume(in.readInt());
+    }
+
+    static int clampVolume(int volumePercent) {
+        if (volumePercent < 0) return 0;
+        if (volumePercent > 100) return 100;
+        return volumePercent;
     }
 
     static final class Header {

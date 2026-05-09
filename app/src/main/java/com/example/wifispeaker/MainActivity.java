@@ -21,9 +21,13 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.DataOutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,6 +37,7 @@ public class MainActivity extends Activity {
     private static final int REQ_RECORD_AUDIO = 1003;
     private static final String PREFS = "wifi_speaker_prefs";
     private static final String KEY_LAST_HOST = "last_host";
+    private static final String KEY_RECEIVER_VOLUME = "receiver_volume_percent";
 
     private enum ScreenMode {
         HOME,
@@ -50,15 +55,19 @@ public class MainActivity extends Activity {
     private TextView senderStatusText;
     private TextView homeStatusText;
     private TextView selectedDeviceText;
+    private TextView receiverVolumeText;
+    private SeekBar receiverVolumeSeekBar;
     private LinearLayout deviceListLayout;
     private Button receiverToggleButton;
     private Button senderToggleButton;
     private Button searchButton;
 
+    private Runnable pendingVolumeSend;
     private volatile boolean discovering = false;
     private boolean receiverRunning = ReceiverService.sRunning;
     private boolean receiverConnected = ReceiverService.sConnected;
     private String receiverMessage = ReceiverService.sMessage;
+    private int receiverVolumePercent = ReceiverService.sVolumePercent;
     private boolean senderRunning = SenderService.sRunning;
     private boolean senderStreaming = SenderService.sStreaming;
     private String senderHost = SenderService.sHost;
@@ -75,6 +84,7 @@ public class MainActivity extends Activity {
                 receiverRunning = intent.getBooleanExtra(ReceiverService.EXTRA_RUNNING, false);
                 receiverConnected = intent.getBooleanExtra(ReceiverService.EXTRA_CONNECTED, false);
                 receiverMessage = intent.getStringExtra(ReceiverService.EXTRA_MESSAGE);
+                receiverVolumePercent = intent.getIntExtra(ReceiverService.EXTRA_VOLUME_PERCENT, ReceiverService.sVolumePercent);
             } else if (SenderService.ACTION_STATE.equals(action)) {
                 senderRunning = intent.getBooleanExtra(SenderService.EXTRA_RUNNING, false);
                 senderStreaming = intent.getBooleanExtra(SenderService.EXTRA_STREAMING, false);
@@ -127,7 +137,7 @@ public class MainActivity extends Activity {
     }
 
     private void configureSystemBars() {
-        // v0.3.3: conservative system-bar handling.
+        // v0.3.4: conservative system-bar handling.
         // Keep the app out of edge-to-edge mode so content starts below the status bar.
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
@@ -174,6 +184,7 @@ public class MainActivity extends Activity {
         receiverRunning = ReceiverService.sRunning;
         receiverConnected = ReceiverService.sConnected;
         receiverMessage = ReceiverService.sMessage;
+        receiverVolumePercent = ReceiverService.sVolumePercent;
         senderRunning = SenderService.sRunning;
         senderStreaming = SenderService.sStreaming;
         senderHost = SenderService.sHost;
@@ -185,7 +196,7 @@ public class MainActivity extends Activity {
         clearViewRefs();
 
         LinearLayout root = baseRoot();
-        TextView title = titleText("WiFi Speaker MVP v0.3.3");
+        TextView title = titleText("WiFi Speaker MVP v0.3.4");
         root.addView(title, matchWrap());
 
         TextView subtitle = bodyText("请选择这台 Android 设备当前要扮演的角色：接收端负责播放收到的音频，发送端负责采集并推送本机播放音频。");
@@ -209,7 +220,7 @@ public class MainActivity extends Activity {
         homeStatusText = bodyText("");
         root.addView(homeStatusText, matchWrap());
 
-        TextView hint = bodyText("说明：发送端需要 Android 10+，并且首次推送时需要允许录音权限和系统投屏/录制授权。接收端和发送端必须在同一个 Wi-Fi 下。");
+        TextView hint = bodyText("说明：发送端需要 Android 10+，并且首次推送时需要允许录音权限和系统投屏/录制授权。接收端和发送端必须在同一个 Wi-Fi 下。v0.3.4 起，发送端可以控制接收端的应用内播放音量，不会改变发送端本机系统音量。");
         hint.setPadding(0, dp(12), 0, 0);
         root.addView(hint, matchWrap());
 
@@ -245,7 +256,7 @@ public class MainActivity extends Activity {
 
         addDivider(root);
 
-        TextView hint = bodyText("启动后请保持 App 或通知栏服务运行。音频端口：" + Protocol.PORT + "；搜索发现端口：" + Discovery.DISCOVERY_PORT + "。如果发送端搜不到，请检查是否连接同一个 Wi-Fi，或者路由器是否开启了 AP 隔离/访客网络隔离。");
+        TextView hint = bodyText("启动后请保持 App 或通知栏服务运行。音频端口：" + Protocol.PORT + "；音量控制端口：" + Protocol.CONTROL_PORT + "；搜索发现端口：" + Discovery.DISCOVERY_PORT + "。如果发送端搜不到，请检查是否连接同一个 Wi-Fi，或者路由器是否开启了 AP 隔离/访客网络隔离。");
         root.addView(hint, matchWrap());
 
         setContentView(wrapScroll(root));
@@ -295,6 +306,33 @@ public class MainActivity extends Activity {
         selectedDeviceText.setPadding(0, dp(8), 0, dp(4));
         root.addView(selectedDeviceText, matchWrap());
 
+        receiverVolumeText = bodyText("");
+        receiverVolumeText.setTextSize(16);
+        receiverVolumeText.setPadding(0, dp(10), 0, 0);
+        root.addView(receiverVolumeText, matchWrap());
+
+        receiverVolumeSeekBar = new SeekBar(this);
+        receiverVolumeSeekBar.setMax(100);
+        receiverVolumeSeekBar.setProgress(getSavedReceiverVolumePercent());
+        receiverVolumeSeekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int volume = Protocol.clampVolume(progress);
+                getPrefs().edit().putInt(KEY_RECEIVER_VOLUME, volume).apply();
+                updateReceiverVolumeUi();
+                if (fromUser) scheduleReceiverVolumeSend(volume);
+            }
+
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                int volume = Protocol.clampVolume(seekBar.getProgress());
+                sendReceiverVolumeSoon(volume, 0);
+            }
+        });
+        root.addView(receiverVolumeSeekBar, matchWrap());
+
         deviceListLayout = new LinearLayout(this);
         deviceListLayout.setOrientation(LinearLayout.VERTICAL);
         root.addView(deviceListLayout, matchWrap());
@@ -306,7 +344,7 @@ public class MainActivity extends Activity {
 
         addDivider(root);
 
-        TextView hint = bodyText("提示：搜索结果会显示为列表，点列表中的设备会自动填入 IP。推送启动后按钮会切换为“停止推送”，输入框和搜索按钮会暂时禁用。某些 App 会禁止系统音频采集，测试时建议先用普通浏览器视频或普通音乐播放器。");
+        TextView hint = bodyText("提示：搜索结果会显示为列表，点列表中的设备会自动填入 IP。推送启动后按钮会切换为“停止推送”，输入框和搜索按钮会暂时禁用。音量滑条只控制接收端 App 内部的播放增益，不会改变发送端系统音量。某些 App 会禁止系统音频采集，测试时建议先用普通浏览器视频或普通音乐播放器。");
         root.addView(hint, matchWrap());
 
         setContentView(wrapScroll(root));
@@ -321,6 +359,8 @@ public class MainActivity extends Activity {
         senderStatusText = null;
         homeStatusText = null;
         selectedDeviceText = null;
+        receiverVolumeText = null;
+        receiverVolumeSeekBar = null;
         deviceListLayout = null;
         receiverToggleButton = null;
         senderToggleButton = null;
@@ -424,6 +464,7 @@ public class MainActivity extends Activity {
                     Discovery.Device first = finalDevices.get(0);
                     setHostText(first.host);
                     getPrefs().edit().putString(KEY_LAST_HOST, first.host).apply();
+                    sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 200);
                     senderMessage = "已发现 " + finalDevices.size() + " 台接收端，请从列表中选择；已默认选择第一台。";
                     Toast.makeText(this, "发现 " + finalDevices.size() + " 台接收端", Toast.LENGTH_SHORT).show();
                     if (startSenderAfterFound) beginProjectionRequest(first.host);
@@ -462,6 +503,7 @@ public class MainActivity extends Activity {
             item.setOnClickListener(v -> {
                 setHostText(device.host);
                 getPrefs().edit().putString(KEY_LAST_HOST, device.host).apply();
+                sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 200);
                 senderMessage = "已选择接收端：" + device.name + " / " + device.host;
                 updateControls();
             });
@@ -486,6 +528,7 @@ public class MainActivity extends Activity {
             senderRunning = true;
             senderStreaming = false;
             senderHost = host;
+            sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 500);
             senderMessage = "发送端已启动，正在连接 " + host + "...";
             updateControls();
             Toast.makeText(this, "发送端已启动", Toast.LENGTH_SHORT).show();
@@ -522,7 +565,7 @@ public class MainActivity extends Activity {
     private void updateControls() {
         if (ipText != null) {
             String ip = WifiUtils.getLikelyLanIpAddress();
-            ipText.setText("本机局域网 IP：" + ip + "\n音频端口：" + Protocol.PORT + "    发现端口：" + Discovery.DISCOVERY_PORT);
+            ipText.setText("本机局域网 IP：" + ip + "\n音频端口：" + Protocol.PORT + "    音量控制端口：" + Protocol.CONTROL_PORT + "    发现端口：" + Discovery.DISCOVERY_PORT);
         }
 
         if (homeStatusText != null) {
@@ -539,7 +582,7 @@ public class MainActivity extends Activity {
             String state = receiverRunning
                     ? (receiverConnected ? "运行中 / 已连接" : "运行中 / 等待连接")
                     : "未启动";
-            receiverStatusText.setText("当前状态：" + state + "\n" + safe(receiverMessage));
+            receiverStatusText.setText("当前状态：" + state + "\n接收端应用内音量：" + receiverVolumePercent + "%\n" + safe(receiverMessage));
         }
 
         if (receiverToggleButton != null) {
@@ -572,6 +615,8 @@ public class MainActivity extends Activity {
             }
         }
 
+        updateReceiverVolumeUi();
+
         if (senderToggleButton != null) {
             String host = getHostText();
             if (senderRunning) {
@@ -585,6 +630,79 @@ public class MainActivity extends Activity {
                 senderToggleButton.setEnabled(!discovering);
             }
         }
+    }
+
+    private int getSavedReceiverVolumePercent() {
+        return Protocol.clampVolume(getPrefs().getInt(KEY_RECEIVER_VOLUME, 100));
+    }
+
+    private void updateReceiverVolumeUi() {
+        if (receiverVolumeText == null && receiverVolumeSeekBar == null) return;
+        int volume = getSavedReceiverVolumePercent();
+        String host = getHostText();
+        if (receiverVolumeText != null) {
+            String suffix = host.isEmpty()
+                    ? "（请先选择接收端）"
+                    : "（控制 " + host + " 的应用内播放音量）";
+            receiverVolumeText.setText("接收端音量：" + volume + "% " + suffix);
+        }
+        if (receiverVolumeSeekBar != null) {
+            if (receiverVolumeSeekBar.getProgress() != volume) {
+                receiverVolumeSeekBar.setProgress(volume);
+            }
+            receiverVolumeSeekBar.setEnabled(!host.isEmpty());
+        }
+    }
+
+    private void scheduleReceiverVolumeSend(int volumePercent) {
+        sendReceiverVolumeSoon(volumePercent, 250);
+    }
+
+    private void sendReceiverVolumeSoon(int volumePercent, long delayMs) {
+        int volume = Protocol.clampVolume(volumePercent);
+        if (pendingVolumeSend != null) {
+            mainHandler.removeCallbacks(pendingVolumeSend);
+            pendingVolumeSend = null;
+        }
+        pendingVolumeSend = () -> {
+            pendingVolumeSend = null;
+            sendReceiverVolumeCommand(volume);
+        };
+        mainHandler.postDelayed(pendingVolumeSend, delayMs);
+    }
+
+    private void sendReceiverVolumeCommand(int volumePercent) {
+        String host = getHostText();
+        if (host.isEmpty()) {
+            senderMessage = "请先选择接收端，再调节接收端音量。";
+            updateControls();
+            return;
+        }
+        int volume = Protocol.clampVolume(volumePercent);
+        new Thread(() -> {
+            boolean ok = false;
+            Exception error = null;
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(host, Protocol.CONTROL_PORT), 1200);
+                s.setTcpNoDelay(true);
+                DataOutputStream out = new DataOutputStream(s.getOutputStream());
+                Protocol.writeVolumeCommand(out, volume);
+                ok = true;
+            } catch (Exception e) {
+                error = e;
+            }
+            boolean finalOk = ok;
+            Exception finalError = error;
+            mainHandler.post(() -> {
+                if (finalOk) {
+                    senderMessage = "已发送接收端音量：" + volume + "%";
+                } else {
+                    String reason = finalError == null ? "未知错误" : finalError.getClass().getSimpleName();
+                    senderMessage = "接收端音量命令发送失败：" + reason + "。请确认接收端已启动且在同一 Wi-Fi。";
+                }
+                updateControls();
+            });
+        }, "wifi-speaker-volume-send").start();
     }
 
     private String getHostText() {
