@@ -27,15 +27,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class SenderService extends Service {
     static final String ACTION_START = "com.example.wifispeaker.action.START_SENDER";
     static final String ACTION_STOP = "com.example.wifispeaker.action.STOP_SENDER";
+    static final String ACTION_STATE = "com.example.wifispeaker.action.SENDER_STATE";
     static final String EXTRA_HOST = "host";
     static final String EXTRA_RESULT_CODE = "result_code";
     static final String EXTRA_RESULT_DATA = "result_data";
+    static final String EXTRA_RUNNING = "running";
+    static final String EXTRA_STREAMING = "streaming";
+    static final String EXTRA_MESSAGE = "message";
 
     private static final String TAG = "WifiSpeakerSender";
     private static final int NOTIFICATION_ID = 2001;
     private static final int SAMPLE_RATE = 48000;
     private static final int CHANNEL_COUNT = 2;
     private static final int RECONNECT_DELAY_MS = 1200;
+
+    static volatile boolean sRunning = false;
+    static volatile boolean sStreaming = false;
+    static volatile String sHost = "";
+    static volatile String sMessage = "未启动";
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread worker;
@@ -48,6 +57,7 @@ public class SenderService extends Service {
         if (intent == null) return START_NOT_STICKY;
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            publishState(false, false, sHost, "已停止推送");
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -57,14 +67,18 @@ public class SenderService extends Service {
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
         Intent resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
         if (host == null || host.trim().isEmpty() || resultData == null) {
+            publishState(false, false, "", "启动失败：缺少接收端地址或系统授权");
             stopSelf();
             return START_NOT_STICKY;
         }
 
+        host = host.trim();
         startForegroundNow("准备发送到 " + host + ":" + Protocol.PORT);
-        stopCurrentWorker();
+        stopCurrentWorker(false);
+        publishState(true, false, host, "准备发送到 " + host + ":" + Protocol.PORT);
         running.set(true);
-        worker = new Thread(() -> runCaptureLoop(host.trim(), resultCode, resultData), "wifi-speaker-sender");
+        String finalHost = host;
+        worker = new Thread(() -> runCaptureLoop(finalHost, resultCode, resultData), "wifi-speaker-sender");
         worker.start();
         return START_STICKY;
     }
@@ -88,6 +102,20 @@ public class SenderService extends Service {
                 nm.notify(NOTIFICATION_ID, Notifications.build(this, "WiFi Speaker 发送端", text));
             }
         } catch (Exception ignored) {}
+    }
+
+    private void publishState(boolean isRunning, boolean isStreaming, String host, String message) {
+        sRunning = isRunning;
+        sStreaming = isStreaming;
+        sHost = host == null ? "" : host;
+        sMessage = message == null ? "" : message;
+        Intent intent = new Intent(ACTION_STATE);
+        intent.setPackage(getPackageName());
+        intent.putExtra(EXTRA_RUNNING, sRunning);
+        intent.putExtra(EXTRA_STREAMING, sStreaming);
+        intent.putExtra(EXTRA_HOST, sHost);
+        intent.putExtra(EXTRA_MESSAGE, sMessage);
+        sendBroadcast(intent);
     }
 
     private void runCaptureLoop(String host, int resultCode, Intent resultData) {
@@ -116,6 +144,7 @@ public class SenderService extends Service {
                         closeSocketQuietly();
                         out = null;
                         updateNotification("连接断开，正在重连 " + host + ":" + Protocol.PORT);
+                        publishState(true, false, host, "连接断开，正在重连 " + host + ":" + Protocol.PORT);
                         sleepQuietly(RECONNECT_DELAY_MS);
                     }
                 } else if (n < 0) {
@@ -128,9 +157,11 @@ public class SenderService extends Service {
             }
         } catch (Exception e) {
             Log.e(TAG, "Sender failed", e);
+            publishState(false, false, host, "发送端异常停止：" + e.getClass().getSimpleName());
         } finally {
             running.set(false);
             closeQuietly();
+            publishState(false, false, host, "已停止推送");
             stopSelf();
         }
     }
@@ -144,6 +175,7 @@ public class SenderService extends Service {
             public void onStop() {
                 Log.w(TAG, "MediaProjection stopped by system/user");
                 running.set(false);
+                publishState(false, false, sHost, "系统音频采集授权已结束");
                 stopSelf();
             }
         }, new Handler(Looper.getMainLooper()));
@@ -186,11 +218,13 @@ public class SenderService extends Service {
             Protocol.writeHeader(out, SAMPLE_RATE, CHANNEL_COUNT, Protocol.PCM_16_BIT);
             socket = s;
             updateNotification("正在发送到 " + host + ":" + Protocol.PORT);
+            publishState(true, true, host, "正在发送到 " + host + ":" + Protocol.PORT);
             return out;
         } catch (Exception e) {
             try { s.close(); } catch (Exception ignored) {}
             Log.w(TAG, "Connect failed, will retry: " + host, e);
             updateNotification("连接失败，正在重试 " + host + ":" + Protocol.PORT);
+            publishState(true, false, host, "连接失败，正在重试 " + host + ":" + Protocol.PORT);
             return null;
         }
     }
@@ -203,10 +237,11 @@ public class SenderService extends Service {
         }
     }
 
-    private void stopCurrentWorker() {
+    private void stopCurrentWorker(boolean publishStopped) {
         running.set(false);
         if (worker != null) worker.interrupt();
         closeQuietly();
+        if (publishStopped) publishState(false, false, sHost, "已停止推送");
     }
 
     private void closeSocketQuietly() {
@@ -236,7 +271,7 @@ public class SenderService extends Service {
 
     @Override
     public void onDestroy() {
-        stopCurrentWorker();
+        stopCurrentWorker(true);
         super.onDestroy();
     }
 

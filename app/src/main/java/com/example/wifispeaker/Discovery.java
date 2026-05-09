@@ -54,9 +54,16 @@ final class Discovery {
     }
 
     static Device findFirstReceiver(int timeoutMs) throws Exception {
+        List<Device> devices = findReceivers(timeoutMs);
+        return devices.isEmpty() ? null : devices.get(0);
+    }
+
+    static List<Device> findReceivers(int timeoutMs) throws Exception {
         long deadline = System.currentTimeMillis() + timeoutMs;
         byte[] req = requestBytes();
         byte[] buf = new byte[512];
+        List<Device> results = new ArrayList<>();
+        Set<String> seenHosts = new LinkedHashSet<>();
 
         DatagramSocket socket = new DatagramSocket(null);
         try {
@@ -84,16 +91,19 @@ final class Discovery {
                 }
                 Device device = parseResponse(reply.getData(), reply.getLength());
                 if (device != null) {
-                    if (device.host == null || device.host.length() == 0 || "0.0.0.0".equals(device.host)) {
-                        return new Device(reply.getAddress().getHostAddress(), device.name);
+                    String host = device.host;
+                    if (host == null || host.length() == 0 || "0.0.0.0".equals(host)) {
+                        host = reply.getAddress().getHostAddress();
                     }
-                    return device;
+                    if (seenHosts.add(host)) {
+                        results.add(new Device(host, device.name));
+                    }
                 }
             }
         } finally {
             socket.close();
         }
-        return null;
+        return results;
     }
 
     private static List<InetAddress> getBroadcastTargets() {

@@ -24,9 +24,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ReceiverService extends Service {
     static final String ACTION_START = "com.example.wifispeaker.action.START_RECEIVER";
     static final String ACTION_STOP = "com.example.wifispeaker.action.STOP_RECEIVER";
+    static final String ACTION_STATE = "com.example.wifispeaker.action.RECEIVER_STATE";
+    static final String EXTRA_RUNNING = "running";
+    static final String EXTRA_CONNECTED = "connected";
+    static final String EXTRA_MESSAGE = "message";
 
     private static final String TAG = "WifiSpeakerReceiver";
     private static final int NOTIFICATION_ID = 2002;
+
+    static volatile boolean sRunning = false;
+    static volatile boolean sConnected = false;
+    static volatile String sMessage = "未启动";
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread worker;
@@ -42,13 +50,16 @@ public class ReceiverService extends Service {
         if (intent == null) return START_NOT_STICKY;
         String action = intent.getAction();
         if (ACTION_STOP.equals(action)) {
+            publishState(false, false, "已停止接收端");
             stopSelf();
             return START_NOT_STICKY;
         }
         if (!ACTION_START.equals(action)) return START_NOT_STICKY;
 
-        startForegroundNow("等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT);
-        stopCurrentWorker();
+        String waitMessage = "等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT;
+        startForegroundNow(waitMessage);
+        stopCurrentWorker(false);
+        publishState(true, false, waitMessage);
         running.set(true);
         acquireMulticastLock();
         discoveryWorker = new Thread(this::runDiscoveryResponder, "wifi-speaker-discovery-responder");
@@ -70,6 +81,18 @@ public class ReceiverService extends Service {
         }
     }
 
+    private void publishState(boolean isRunning, boolean isConnected, String message) {
+        sRunning = isRunning;
+        sConnected = isConnected;
+        sMessage = message == null ? "" : message;
+        Intent intent = new Intent(ACTION_STATE);
+        intent.setPackage(getPackageName());
+        intent.putExtra(EXTRA_RUNNING, sRunning);
+        intent.putExtra(EXTRA_CONNECTED, sConnected);
+        intent.putExtra(EXTRA_MESSAGE, sMessage);
+        sendBroadcast(intent);
+    }
+
     private void runServerLoop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         try {
@@ -80,18 +103,26 @@ public class ReceiverService extends Service {
                 Socket socket = serverSocket.accept();
                 clientSocket = socket;
                 socket.setTcpNoDelay(true);
-                startForegroundNow("已连接：" + socket.getInetAddress().getHostAddress());
+                String connectedMessage = "已连接：" + socket.getInetAddress().getHostAddress();
+                startForegroundNow(connectedMessage);
+                publishState(true, true, connectedMessage);
                 handleClient(socket);
                 closeClientQuietly();
                 if (running.get()) {
-                    startForegroundNow("等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT);
+                    String waitMessage = "等待连接：" + WifiUtils.getLikelyLanIpAddress() + ":" + Protocol.PORT;
+                    startForegroundNow(waitMessage);
+                    publishState(true, false, waitMessage);
                 }
             }
         } catch (Exception e) {
-            if (running.get()) Log.e(TAG, "Receiver failed", e);
+            if (running.get()) {
+                Log.e(TAG, "Receiver failed", e);
+                publishState(false, false, "接收端异常停止：" + e.getClass().getSimpleName());
+            }
         } finally {
             running.set(false);
             closeQuietly();
+            publishState(false, false, "已停止接收端");
             stopSelf();
         }
     }
@@ -198,11 +229,12 @@ public class ReceiverService extends Service {
         multicastLock = null;
     }
 
-    private void stopCurrentWorker() {
+    private void stopCurrentWorker(boolean publishStopped) {
         running.set(false);
         if (worker != null) worker.interrupt();
         if (discoveryWorker != null) discoveryWorker.interrupt();
         closeQuietly();
+        if (publishStopped) publishState(false, false, "已停止接收端");
     }
 
     private void closeClientQuietly() {
@@ -236,7 +268,7 @@ public class ReceiverService extends Service {
 
     @Override
     public void onDestroy() {
-        stopCurrentWorker();
+        stopCurrentWorker(true);
         super.onDestroy();
     }
 

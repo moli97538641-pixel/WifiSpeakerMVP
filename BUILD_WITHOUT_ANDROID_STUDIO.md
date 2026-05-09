@@ -1,10 +1,9 @@
-# 不安装 Android Studio 的 APK 构建方法
+# 不安装 Android Studio 打包 APK
 
-## 方式：GitHub Actions 云端构建
+## 方法：GitHub Actions 在线打包
 
-1. 新建 GitHub 仓库，建议不要自动添加 README、.gitignore 或 license。
-2. 把本项目内容上传到仓库根目录。
-3. 根目录必须直接看到：
+1. 在 GitHub 创建仓库。
+2. 把本目录内容上传到仓库根目录，确保根目录下能直接看到：
 
 ```text
 app/
@@ -16,44 +15,31 @@ README.md
 
 不要多套一层 `WifiSpeakerMVP/` 文件夹。
 
-4. 进入仓库顶部的 Actions。
-5. 左侧选择 `Build Android APK`。
-6. 点击 `Run workflow`。
-7. 等待绿色对勾。
-8. 打开构建详情，在底部 `Artifacts` 下载 `WifiSpeakerMVP-debug-apk`。
-9. 解压得到 `app-debug.apk`。
-10. 安装到平板和发送端 Android 设备。
+3. 进入仓库的 `Actions`。
+4. 点击 `Build Android APK`。
+5. 点击 `Run workflow`。
+6. 等待构建完成。
+7. 在构建详情页面底部下载 `Artifacts`。
+8. 解压后得到 `app-debug.apk`。
+9. 把 APK 安装到两台 Android 设备。
 
 ## 更新已有仓库
 
-如果你已经上传过旧版本：
+如果你已经用 GitHub Desktop 管理仓库：
 
-1. 用 GitHub Desktop 打开本地仓库。
-2. 删除旧的 `app`、`.github`、`build.gradle`、`settings.gradle`、`README.md`、`BUILD_WITHOUT_ANDROID_STUDIO.md`。
-3. 不要删除 `.git` 文件夹。
-4. 复制新版项目内容到仓库根目录。
-5. 在 GitHub Desktop 中提交，例如 `Update to v0.2.0`。
-6. 点击 `Push origin`。
-7. GitHub Actions 会自动重新打包。
+1. 先确认当前可用版本已经 `Commit to main`。
+2. 可选：给当前版本打 tag，例如 `v0.2.0`。
+3. 打开本地仓库目录。
+4. 删除旧的源码文件和目录，但不要删除 `.git`。
+5. 把新版源码复制到仓库根目录。
+6. 在 GitHub Desktop 中提交：`Update to v0.3.0`。
+7. `Push origin`。
+8. 等 GitHub Actions 自动重新打包。
 
-## v0.2.0 使用说明
+## v0.3.0 使用重点
 
-平板端先点：
-
-```text
-平板：启动接收端 / Speaker
-```
-
-手机端可以点：
-
-```text
-搜索平板 / Auto discover
-```
-
-搜到后再点：
-
-```text
-手机：启动发送端 / Push audio
-```
-
-如果搜索不到，手动输入平板上显示的 IP 也可以继续使用。
+- 主界面先选角色。
+- 其中一台 Android 设备选择接收端并启动。
+- 另一台 Android 设备选择发送端，搜索设备会出现列表。
+- 点击列表中的设备后，再启动推送。
+- 运行中按钮会自动切换成停止按钮。
