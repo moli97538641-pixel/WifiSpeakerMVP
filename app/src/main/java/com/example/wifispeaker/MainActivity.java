@@ -90,6 +90,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         mainHandler = new Handler(Looper.getMainLooper());
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        configureSystemBars();
         Notifications.ensureChannel(this);
         requestNotificationPermissionIfNeeded();
         requestRecordAudioPermissionIfNeeded();
@@ -121,6 +122,27 @@ public class MainActivity extends Activity {
             showHomeScreen();
         } else {
             super.onBackPressed();
+        }
+    }
+
+    private void configureSystemBars() {
+        // v0.3.1: keep the Android system status/notification bar and navigation bar visible.
+        // This avoids the app content drawing under the top system bar on devices that apply
+        // edge-to-edge defaults or vendor fullscreen behaviors.
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getWindow().setDecorFitsSystemWindows(true);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setStatusBarColor(0xFFFFFFFF);
+            getWindow().setNavigationBarColor(0xFFFFFFFF);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int flags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            getWindow().getDecorView().setSystemUiVisibility(flags);
         }
     }
 
@@ -160,7 +182,7 @@ public class MainActivity extends Activity {
         clearViewRefs();
 
         LinearLayout root = baseRoot();
-        TextView title = titleText("WiFi Speaker MVP v0.3.0");
+        TextView title = titleText("WiFi Speaker MVP v0.3.1");
         root.addView(title, matchWrap());
 
         TextView subtitle = bodyText("请选择这台 Android 设备当前要扮演的角色：接收端负责播放收到的音频，发送端负责采集并推送本机播放音频。");
