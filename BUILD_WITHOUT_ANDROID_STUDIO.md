@@ -49,3 +49,9 @@ app/build/outputs/apk/debug/app-debug.apk
 - 发送端必须是 Android 10/API 29 以上。
 - 被推流的 App 必须允许系统音频采集。DRM、通话、部分播放器可能采不到。
 - 当前是 debug APK，适合测试。正式发布需要签名 release APK。
+
+
+## V0.1.1 修复
+
+- 增加 `RECORD_AUDIO` 权限和运行时授权请求。Android 的系统播放音频采集需要录音权限 + MediaProjection 授权。
+- 接收端最低系统版本下调到 Android 6/API 23；发送端仍需 Android 10/API 29+。

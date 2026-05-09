@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
@@ -21,6 +22,7 @@ import android.widget.Toast;
 public class MainActivity extends Activity {
     private static final int REQ_MEDIA_PROJECTION = 1001;
     private static final int REQ_NOTIFICATIONS = 1002;
+    private static final int REQ_RECORD_AUDIO = 1003;
     private static final String PREFS = "wifi_speaker_prefs";
     private static final String KEY_LAST_HOST = "last_host";
 
@@ -34,7 +36,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         projectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         Notifications.ensureChannel(this);
-        requestNotificationPermissionIfNeeded();
+        requestRecordAudioPermissionIfNeeded();
         buildUi();
     }
 
@@ -107,7 +109,7 @@ public class MainActivity extends Activity {
 
         hintText = new TextView(this);
         hintText.setTextSize(14);
-        hintText.setText("注意：发送端需要 Android 10+。某些 App 会禁止被录制，通话/DRM/受保护内容通常采不到。首次启动会弹出系统投屏/录音授权，这是 Android 对播放音频采集的要求。");
+        hintText.setText("注意：发送端需要 Android 10+。某些 App 会禁止被录制，通话/DRM/受保护内容通常采不到。首次启动请允许“录音/麦克风”权限；点发送端后还会弹出系统投屏/录制授权，这是 Android 对播放音频采集的要求。");
         root.addView(hintText, matchWrap());
 
         ScrollView scroll = new ScrollView(this);
@@ -132,6 +134,11 @@ public class MainActivity extends Activity {
     private void requestProjectionAndStartSender() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             Toast.makeText(this, "发送端需要 Android 10 / API 29 或更高版本", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!hasRecordAudioPermission()) {
+            requestRecordAudioPermissionIfNeeded();
+            Toast.makeText(this, "请先允许麦克风/音频录制权限，然后再点一次启动发送端", Toast.LENGTH_LONG).show();
             return;
         }
         String host = hostInput.getText().toString().trim();
@@ -172,6 +179,18 @@ public class MainActivity extends Activity {
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
+        }
+    }
+
+    private boolean hasRecordAudioPermission() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                || checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestRecordAudioPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_RECORD_AUDIO);
         }
     }
 
