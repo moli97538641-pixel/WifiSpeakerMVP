@@ -46,7 +46,7 @@ public class SenderService extends Service {
     private static final int CHANNEL_COUNT = 2;
     private static final int FRAME_DURATION_MS = Protocol.DEFAULT_FRAME_MS;
     private static final int RECONNECT_DELAY_MS = 800;
-    private static final int CLIENT_QUEUE_FRAMES = 8;
+    private static final int CLIENT_QUEUE_FRAMES = 6;
 
     static volatile boolean sRunning = false;
     static volatile boolean sStreaming = false;
@@ -137,9 +137,10 @@ public class SenderService extends Service {
         try {
             prepareAudioCapture(resultCode, resultData);
             startClients(hosts);
+            waitForInitialConnections();
             byte[] buffer = new byte[getFrameBytes()];
             recorder.startRecording();
-            publishAggregateState("低延迟音频采集中，正在连接接收端...");
+            publishAggregateState("同步音频采集中，正在向接收端推送...");
 
             while (running.get() && !Thread.currentThread().isInterrupted()) {
                 int n = recorder.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING);
@@ -180,6 +181,23 @@ public class SenderService extends Service {
                 clients.add(client);
                 client.start();
             }
+        }
+    }
+
+    private void waitForInitialConnections() {
+        long deadline = System.currentTimeMillis() + 1200;
+        while (running.get() && System.currentTimeMillis() < deadline) {
+            int connected = 0;
+            int total;
+            synchronized (clients) {
+                total = clients.size();
+                for (ClientSender client : clients) {
+                    if (client.connected) connected++;
+                }
+            }
+            publishState(true, connected > 0, Protocol.joinHosts(targetHosts), "等待初始连接：" + connected + "/" + total);
+            if (total > 0 && connected == total) break;
+            sleepQuietly(80);
         }
     }
 
@@ -245,7 +263,7 @@ public class SenderService extends Service {
         if (total <= 0) {
             message = fallback;
         } else if (connected == total) {
-            message = "低延迟推送中：" + connected + "/" + total + " 台接收端";
+            message = "同步推送中：" + connected + "/" + total + " 台接收端";
         } else if (connected > 0) {
             message = "正在向 " + connected + "/" + total + " 台接收端推送；其余正在重连：" + Protocol.joinHosts(failed);
         } else {
@@ -325,6 +343,9 @@ public class SenderService extends Service {
         void offer(byte[] frame) {
             if (!active.get()) return;
             if (!queue.offer(frame)) {
+                // 队列满时只丢最旧的一帧，再放入最新帧。
+                // 之前直接清空队列会让慢设备频繁吃空，表现为声音断断续续。
+                // 这里保留一个 40~60ms 的小缓冲，在连续性和低延迟之间取平衡。
                 queue.poll();
                 queue.offer(frame);
             }
@@ -344,6 +365,7 @@ public class SenderService extends Service {
                     byte[] frame = queue.poll(500, TimeUnit.MILLISECONDS);
                     if (frame == null) continue;
                     out.write(frame);
+                    out.flush();
                 } catch (Exception e) {
                     Log.w(TAG, "Write failed for " + host + ", will reconnect", e);
                     disconnect();

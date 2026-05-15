@@ -1,6 +1,6 @@
 # WSPK v3 Protocol
 
-v0.3.5 起，音频流协议升级为 `WSPK0003`。目标是支持 Android / Windows 跨平台、一对多推送、低延迟缓冲和后续同步扩展。
+v0.3.6 起，音频流协议升级为 `WSPK0003`。目标是支持 Android / Windows 跨平台、一对多推送、低延迟缓冲和后续同步扩展。
 
 ## Ports
 

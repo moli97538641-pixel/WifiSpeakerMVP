@@ -148,7 +148,7 @@ public class ReceiverService extends Service {
                 channelOutMask,
                 AudioFormat.ENCODING_PCM_16BIT
         );
-        int lowLatencyBytes = bytesForMs(header.sampleRate, header.channelCount, header.bitsPerSample, 90);
+        int lowLatencyBytes = bytesForMs(header.sampleRate, header.channelCount, header.bitsPerSample, 120);
         int bufferBytes = Math.max(minBytes, lowLatencyBytes);
 
         AudioFormat outputFormat = new AudioFormat.Builder()
@@ -173,17 +173,31 @@ public class ReceiverService extends Service {
         audioTrack = builder.build();
 
         applyPlaybackVolume();
-        audioTrack.play();
 
         long submittedFrames = 0;
         long droppedFrames = 0;
+        boolean playbackStarted = false;
+        final long targetStartFrames = header.sampleRate * 180L / 1000L;
+        final long softMaxQueuedMs = 320L;
+        final long hardMaxQueuedMs = 520L;
+
         while (running.get() && !Thread.currentThread().isInterrupted()) {
             Protocol.AudioFrame frame = Protocol.readAudioFrame(in);
-            long queuedMs = getQueuedAudioMs(audioTrack, submittedFrames, header.sampleRate);
-            if (queuedMs > 180) {
+            long queuedMs = playbackStarted ? getQueuedAudioMs(audioTrack, submittedFrames, header.sampleRate) : 0;
+
+            if (playbackStarted && queuedMs > hardMaxQueuedMs) {
+                // 严重积压时重启 AudioTrack，避免某一台接收端持续慢半拍。
+                Log.w(TAG, "Audio queue too large, resetting track, queuedMs=" + queuedMs);
+                try { audioTrack.pause(); } catch (Exception ignored) {}
+                try { audioTrack.flush(); } catch (Exception ignored) {}
+                audioTrack.play();
+                submittedFrames = audioTrack.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+                queuedMs = 0;
+            } else if (playbackStarted && queuedMs > softMaxQueuedMs) {
+                // 轻度积压时只丢当前帧，让缓冲自然回落。阈值比上一版更保守，减少断续。
                 droppedFrames += frame.durationFrames;
                 if ((droppedFrames % (header.sampleRate * 2L)) < frame.durationFrames) {
-                    Log.w(TAG, "Dropping stale audio to reduce latency, queuedMs=" + queuedMs);
+                    Log.w(TAG, "Dropping frame to keep receivers aligned, queuedMs=" + queuedMs);
                 }
                 continue;
             }
@@ -193,8 +207,15 @@ public class ReceiverService extends Service {
             while (written < payload.length && running.get()) {
                 int ret = audioTrack.write(payload, written, payload.length - written, AudioTrack.WRITE_BLOCKING);
                 if (ret < 0) throw new IllegalStateException("AudioTrack write failed: " + ret);
+                if (ret == 0) continue;
                 written += ret;
                 submittedFrames += ret / Protocol.bytesPerFrame(header.channelCount, header.bitsPerSample);
+            }
+
+            if (!playbackStarted && submittedFrames >= targetStartFrames) {
+                audioTrack.play();
+                playbackStarted = true;
+                Log.i(TAG, "Prebuffer ready, start playback with about 180ms buffer");
             }
         }
     }

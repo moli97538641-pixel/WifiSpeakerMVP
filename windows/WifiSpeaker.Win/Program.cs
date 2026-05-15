@@ -54,8 +54,8 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "WifiSpeakerMVP v0.3.5";
-        MinimumSize = new Size(860, 620);
+        Text = "WifiSpeakerMVP v0.3.6";
+        MinimumSize = new Size(980, 760);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
@@ -82,11 +82,11 @@ internal sealed class MainForm : Form
             Padding = new Padding(14),
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 72));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 28));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
         Controls.Add(root);
 
-        _title.Text = "WifiSpeakerMVP v0.3.5  |  Windows 图形端";
+        _title.Text = "WifiSpeakerMVP v0.3.6  |  Windows 图形端";
         _title.Font = new Font(Font.FontFamily, 14, FontStyle.Bold);
         _title.Dock = DockStyle.Fill;
         _title.TextAlign = ContentAlignment.MiddleLeft;
@@ -107,17 +107,8 @@ internal sealed class MainForm : Form
 
     private TabPage BuildReceiverTab()
     {
-        var page = new TabPage("接收端");
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            ColumnCount = 2,
-            RowCount = 8,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 8; i++) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, i == 7 ? 120 : 42));
+        var page = new TabPage("接收端") { AutoScroll = true };
+        var layout = CreateScrollableFormLayout();
         page.Controls.Add(layout);
 
         AddLabel(layout, "模式：", 0, 0);
@@ -132,9 +123,10 @@ internal sealed class MainForm : Form
         AddLabel(layout, "状态：", 0, 3);
         _receiverStatusLabel = AddValueLabel(layout, "未启动", 1, 3);
 
-        var buttonPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        _receiverStartButton = new Button { Text = "启动接收端", AutoSize = true, Height = 32 };
-        _receiverStopButton = new Button { Text = "停止接收端", AutoSize = true, Height = 32 };
+        AddLabel(layout, "操作：", 0, 4);
+        var buttonPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight };
+        _receiverStartButton = new Button { Text = "启动接收端", AutoSize = true, Height = 34 };
+        _receiverStopButton = new Button { Text = "停止接收端", AutoSize = true, Height = 34 };
         _receiverStartButton.Click += (_, _) => StartReceiver();
         _receiverStopButton.Click += (_, _) => StopReceiver();
         buttonPanel.Controls.Add(_receiverStartButton);
@@ -145,56 +137,43 @@ internal sealed class MainForm : Form
         {
             Text = "说明：启动后，同一 Wi-Fi 下的发送端可以搜索到这台 Windows 设备。接收端音量由发送端滑条控制，作用于本程序播放音量，不改系统音量。",
             Dock = DockStyle.Fill,
-            AutoSize = false,
+            AutoSize = true,
+            MaximumSize = new Size(760, 0),
         };
         layout.SetColumnSpan(hint, 2);
-        layout.Controls.Add(hint, 0, 6);
+        layout.Controls.Add(hint, 0, 5);
 
         return page;
     }
 
     private TabPage BuildSenderTab()
     {
-        var page = new TabPage("发送端");
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            ColumnCount = 2,
-            RowCount = 10,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 45));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 20));
+        var page = new TabPage("发送端") { AutoScroll = true };
+        var layout = CreateScrollableFormLayout();
         page.Controls.Add(layout);
 
         AddLabel(layout, "模式：", 0, 0);
         AddValueLabel(layout, "当前 Windows 设备作为发送端，采集本机系统播放音频，一对多推送到已选择接收端。", 1, 0);
 
-        _discoverButton = new Button { Text = "搜索接收端设备", AutoSize = true, Height = 32 };
+        AddLabel(layout, "搜索：", 0, 1);
+        _discoverButton = new Button { Text = "搜索接收端设备", AutoSize = true, Height = 34 };
         _discoverButton.Click += async (_, _) => await DiscoverAsync();
         layout.Controls.Add(_discoverButton, 1, 1);
 
         AddLabel(layout, "搜索结果：", 0, 2);
         _deviceList = new CheckedListBox
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            Height = 150,
             CheckOnClick = true,
             IntegralHeight = false,
         };
         layout.Controls.Add(_deviceList, 1, 2);
 
-        var selectionPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        _selectAllButton = new Button { Text = "选择全部搜索结果", AutoSize = true, Height = 32 };
-        _clearSelectionButton = new Button { Text = "清空已选接收端", AutoSize = true, Height = 32 };
+        AddLabel(layout, "选择：", 0, 3);
+        var selectionPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight };
+        _selectAllButton = new Button { Text = "选择全部搜索结果", AutoSize = true, Height = 34 };
+        _clearSelectionButton = new Button { Text = "清空已选接收端", AutoSize = true, Height = 34 };
         _selectAllButton.Click += (_, _) =>
         {
             for (var i = 0; i < _deviceList.Items.Count; i++) _deviceList.SetItemChecked(i, true);
@@ -213,7 +192,8 @@ internal sealed class MainForm : Form
         AddLabel(layout, "手动地址：", 0, 4);
         _manualHostsBox = new TextBox
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
+            Height = 72,
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
             PlaceholderText = "可选：多个 IP 用逗号、空格或换行分隔，例如 192.168.1.35, 192.168.1.36",
@@ -223,9 +203,9 @@ internal sealed class MainForm : Form
         layout.Controls.Add(_manualHostsBox, 1, 4);
 
         AddLabel(layout, "接收端音量：", 0, 5);
-        var volumePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
+        var volumePanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 54, ColumnCount = 2 };
         volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
+        volumePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
         _volumeTrackBar = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = 100, Value = 80, TickFrequency = 10 };
         _volumeLabel = new Label { Text = "80%", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
         _volumeTrackBar.Scroll += (_, _) =>
@@ -244,9 +224,10 @@ internal sealed class MainForm : Form
         volumePanel.Controls.Add(_volumeLabel, 1, 0);
         layout.Controls.Add(volumePanel, 1, 5);
 
-        var sendPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-        _senderStartButton = new Button { Text = "启动推送", AutoSize = true, Height = 32 };
-        _senderStopButton = new Button { Text = "停止推送", AutoSize = true, Height = 32 };
+        AddLabel(layout, "推送：", 0, 6);
+        var sendPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight };
+        _senderStartButton = new Button { Text = "启动推送", AutoSize = true, Height = 34 };
+        _senderStopButton = new Button { Text = "停止推送", AutoSize = true, Height = 34 };
         _senderStartButton.Click += (_, _) => StartSender();
         _senderStopButton.Click += (_, _) => StopSender();
         sendPanel.Controls.Add(_senderStartButton);
@@ -256,7 +237,34 @@ internal sealed class MainForm : Form
         AddLabel(layout, "状态：", 0, 7);
         _senderStatusLabel = AddValueLabel(layout, "未启动", 1, 7);
 
+        var syncHint = new Label
+        {
+            Text = "同步策略：v0.3.6 会先等待多个接收端完成初始连接，并让接收端预缓冲后统一追踪目标缓冲。这样比极限低延迟更稳定，可减少一对多时某台设备慢半拍或声音断续。",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            MaximumSize = new Size(760, 0),
+        };
+        layout.SetColumnSpan(syncHint, 2);
+        layout.Controls.Add(syncHint, 0, 8);
+
         return page;
+    }
+
+    private static TableLayoutPanel CreateScrollableFormLayout()
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Padding = new Padding(12),
+            ColumnCount = 2,
+            RowCount = 16,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var i = 0; i < 16; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        return layout;
     }
 
     private static void AddLabel(TableLayoutPanel layout, string text, int col, int row)
@@ -473,6 +481,8 @@ internal sealed class Sender
             _ = client.RunAsync(token);
         }
 
+        await WaitForInitialConnectionsAsync(token);
+
         var packetizer = new PcmPacketizer(format.SampleRate, 2, FrameMs);
         capture.DataAvailable += (_, e) =>
         {
@@ -510,6 +520,18 @@ internal sealed class Sender
             capture.StopRecording();
             Stop();
             _log("发送端已停止");
+        }
+    }
+
+    private async Task WaitForInitialConnectionsAsync(CancellationToken token)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(1200);
+        while (DateTimeOffset.UtcNow < deadline && !token.IsCancellationRequested)
+        {
+            var connected = _clients.Count(c => c.Connected);
+            _status($"等待初始连接：{connected}/{_clients.Count}");
+            if (_clients.Count > 0 && connected == _clients.Count) break;
+            await Task.Delay(80, token);
         }
     }
 
@@ -612,7 +634,7 @@ internal sealed class ClientSender
         {
             try
             {
-                using var client = new TcpClient { NoDelay = true, SendBufferSize = 24 * 1024 };
+                using var client = new TcpClient { NoDelay = true, SendBufferSize = 32 * 1024 };
                 await client.ConnectAsync(_host, Protocol.Port, token);
                 await using var stream = client.GetStream();
                 await Protocol.WriteHeaderAsync(stream, _sampleRate, _channels, 16, _frameMs, token);
@@ -726,24 +748,46 @@ internal sealed class Receiver
         var waveFormat = new WaveFormat(header.SampleRate, header.BitsPerSample, header.Channels);
         var provider = new BufferedWaveProvider(waveFormat)
         {
-            BufferDuration = TimeSpan.FromMilliseconds(100),
+            BufferDuration = TimeSpan.FromMilliseconds(220),
             DiscardOnBufferOverflow = true
         };
 
         _waveOut?.Stop();
         _waveOut?.Dispose();
-        _waveOut = new WaveOutEvent { DesiredLatency = 45, NumberOfBuffers = 2, Volume = _volumePercent / 100.0f };
+        _waveOut = new WaveOutEvent { DesiredLatency = 90, NumberOfBuffers = 3, Volume = _volumePercent / 100.0f };
         _waveOut.Init(provider);
-        _waveOut.Play();
+
+        var started = false;
+        const double targetStartBufferMs = 180;
+        const double softMaxBufferMs = 320;
+        const double hardMaxBufferMs = 520;
 
         while (!token.IsCancellationRequested)
         {
             var frame = await Protocol.ReadAudioFrameAsync(stream, token);
-            if (provider.BufferedDuration.TotalMilliseconds > 150)
+            var bufferedMs = provider.BufferedDuration.TotalMilliseconds;
+
+            if (started && bufferedMs > hardMaxBufferMs)
             {
+                // 极端积压才清空，避免某个接收端持续慢半拍。
+                provider.ClearBuffer();
+                _log("播放缓冲严重积压，已重置以追同步");
+                bufferedMs = 0;
+            }
+            else if (started && bufferedMs > softMaxBufferMs)
+            {
+                // 轻度积压只丢当前帧，让播放端自然回落，不破坏连续性。
                 continue;
             }
+
             provider.AddSamples(frame.Payload, 0, frame.Payload.Length);
+
+            if (!started && provider.BufferedDuration.TotalMilliseconds >= targetStartBufferMs)
+            {
+                _waveOut.Play();
+                started = true;
+                _log($"已预缓冲约 {targetStartBufferMs:0}ms，开始播放");
+            }
         }
     }
 

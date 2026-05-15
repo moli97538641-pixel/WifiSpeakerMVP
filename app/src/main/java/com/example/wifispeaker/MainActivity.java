@@ -141,7 +141,7 @@ public class MainActivity extends Activity {
     }
 
     private void configureSystemBars() {
-        // v0.3.5: conservative system-bar handling.
+        // v0.3.6: conservative system-bar handling.
         // Keep the app out of edge-to-edge mode so content starts below the status bar.
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
@@ -200,7 +200,7 @@ public class MainActivity extends Activity {
         clearViewRefs();
 
         LinearLayout root = baseRoot();
-        TextView title = titleText("WiFi Speaker MVP v0.3.5");
+        TextView title = titleText("WiFi Speaker MVP v0.3.6");
         root.addView(title, matchWrap());
 
         TextView subtitle = bodyText("请选择这台设备当前要扮演的角色：Android 端可作为发送端或接收端；Windows 端可通过仓库 windows 目录中的程序作为发送端或接收端。");
@@ -224,7 +224,7 @@ public class MainActivity extends Activity {
         homeStatusText = bodyText("");
         root.addView(homeStatusText, matchWrap());
 
-        TextView hint = bodyText("说明：Android 发送端需要 Android 10+，首次推送时需要允许录音权限和系统投屏/录制授权。Android / Windows 接收端和发送端必须在同一个 Wi-Fi 下。v0.3.5 起支持一对多推送、10ms 时间戳音频帧和低延迟缓冲。");
+        TextView hint = bodyText("说明：Android 发送端需要 Android 10+，首次推送时需要允许录音权限和系统投屏/录制授权。Android / Windows 接收端和发送端必须在同一个 Wi-Fi 下。v0.3.6 起优化多接收端同步、稳定预缓冲和低延迟缓冲，减少一对多时某台接收端慢半拍或断续。");
         hint.setPadding(0, dp(12), 0, 0);
         root.addView(hint, matchWrap());
 
