@@ -29,7 +29,9 @@ import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 public class MainActivity extends Activity {
     private static final int REQ_MEDIA_PROJECTION = 1001;
@@ -37,6 +39,7 @@ public class MainActivity extends Activity {
     private static final int REQ_RECORD_AUDIO = 1003;
     private static final String PREFS = "wifi_speaker_prefs";
     private static final String KEY_LAST_HOST = "last_host";
+    private static final String KEY_SELECTED_HOSTS = "selected_hosts";
     private static final String KEY_RECEIVER_VOLUME = "receiver_volume_percent";
 
     private enum ScreenMode {
@@ -73,6 +76,7 @@ public class MainActivity extends Activity {
     private String senderHost = SenderService.sHost;
     private String senderMessage = SenderService.sMessage;
     private final List<Discovery.Device> discoveredDevices = new ArrayList<>();
+    private final Set<String> selectedHosts = new LinkedHashSet<>();
     private boolean receiverRegistered = false;
 
     private final BroadcastReceiver serviceStateReceiver = new BroadcastReceiver() {
@@ -137,7 +141,7 @@ public class MainActivity extends Activity {
     }
 
     private void configureSystemBars() {
-        // v0.3.4: conservative system-bar handling.
+        // v0.3.5: conservative system-bar handling.
         // Keep the app out of edge-to-edge mode so content starts below the status bar.
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
 
@@ -196,10 +200,10 @@ public class MainActivity extends Activity {
         clearViewRefs();
 
         LinearLayout root = baseRoot();
-        TextView title = titleText("WiFi Speaker MVP v0.3.4");
+        TextView title = titleText("WiFi Speaker MVP v0.3.5");
         root.addView(title, matchWrap());
 
-        TextView subtitle = bodyText("请选择这台 Android 设备当前要扮演的角色：接收端负责播放收到的音频，发送端负责采集并推送本机播放音频。");
+        TextView subtitle = bodyText("请选择这台设备当前要扮演的角色：Android 端可作为发送端或接收端；Windows 端可通过仓库 windows 目录中的程序作为发送端或接收端。");
         subtitle.setPadding(0, 0, 0, dp(14));
         root.addView(subtitle, matchWrap());
 
@@ -220,7 +224,7 @@ public class MainActivity extends Activity {
         homeStatusText = bodyText("");
         root.addView(homeStatusText, matchWrap());
 
-        TextView hint = bodyText("说明：发送端需要 Android 10+，并且首次推送时需要允许录音权限和系统投屏/录制授权。接收端和发送端必须在同一个 Wi-Fi 下。v0.3.4 起，发送端可以控制接收端的应用内播放音量，不会改变发送端本机系统音量。");
+        TextView hint = bodyText("说明：Android 发送端需要 Android 10+，首次推送时需要允许录音权限和系统投屏/录制授权。Android / Windows 接收端和发送端必须在同一个 Wi-Fi 下。v0.3.5 起支持一对多推送、10ms 时间戳音频帧和低延迟缓冲。");
         hint.setPadding(0, dp(12), 0, 0);
         root.addView(hint, matchWrap());
 
@@ -236,7 +240,7 @@ public class MainActivity extends Activity {
         root.addView(backButton(), matchWrap());
         root.addView(titleText("接收端 / 播放音频"), matchWrap());
 
-        TextView subtitle = bodyText("在任意一台 Android 设备上启动接收端后，另一台作为发送端的 Android 设备可以搜索到它，并把音频通过 Wi-Fi 推送过来播放。");
+        TextView subtitle = bodyText("在任意一台 Android 设备上启动接收端后，Android 或 Windows 发送端可以把音频通过 Wi-Fi 推送过来播放。");
         root.addView(subtitle, matchWrap());
 
         ipText = bodyText("");
@@ -271,7 +275,7 @@ public class MainActivity extends Activity {
         root.addView(backButton(), matchWrap());
         root.addView(titleText("发送端 / 推送音频"), matchWrap());
 
-        TextView subtitle = bodyText("先搜索接收端并从列表中选择目标设备，然后启动推送。也可以手动输入接收端 IP。");
+        TextView subtitle = bodyText("先搜索接收端并从列表中选择一个或多个目标设备，然后启动一对多推送。也可以手动输入多个接收端 IP，用逗号分隔。");
         root.addView(subtitle, matchWrap());
 
         senderStatusText = bodyText("");
@@ -281,17 +285,23 @@ public class MainActivity extends Activity {
 
         hostInput = new EditText(this);
         hostInput.setSingleLine(true);
-        hostInput.setHint("接收端 IP，例如 192.168.1.35");
-        String lastHost = getPrefs().getString(KEY_LAST_HOST, "");
+        hostInput.setHint("接收端 IP，可多个，用逗号分隔，例如 192.168.1.35, 192.168.1.36");
+        String savedHosts = getPrefs().getString(KEY_SELECTED_HOSTS, getPrefs().getString(KEY_LAST_HOST, ""));
         if (senderHost != null && !senderHost.trim().isEmpty()) {
             hostInput.setText(senderHost.trim());
         } else {
-            hostInput.setText(lastHost);
+            hostInput.setText(savedHosts);
         }
+        syncSelectedHostsFromInput();
         hostInput.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                getPrefs().edit().putString(KEY_LAST_HOST, s == null ? "" : s.toString().trim()).apply();
+                String value = s == null ? "" : s.toString().trim();
+                getPrefs().edit()
+                        .putString(KEY_LAST_HOST, firstHost(value))
+                        .putString(KEY_SELECTED_HOSTS, Protocol.normalizeHosts(value))
+                        .apply();
+                syncSelectedHostsFromInput();
                 updateControls();
             }
             @Override public void afterTextChanged(Editable s) {}
@@ -344,7 +354,7 @@ public class MainActivity extends Activity {
 
         addDivider(root);
 
-        TextView hint = bodyText("提示：搜索结果会显示为列表，点列表中的设备会自动填入 IP。推送启动后按钮会切换为“停止推送”，输入框和搜索按钮会暂时禁用。音量滑条只控制接收端 App 内部的播放增益，不会改变发送端系统音量。某些 App 会禁止系统音频采集，测试时建议先用普通浏览器视频或普通音乐播放器。");
+        TextView hint = bodyText("提示：搜索结果会显示为列表，点列表中的设备可以选择或取消选择。推送启动后按钮会切换为“停止推送”，输入框和搜索按钮会暂时禁用。音量滑条会控制所有已选择接收端的 App 内部播放增益，不会改变发送端系统音量。某些 App 会禁止系统音频采集，测试时建议先用普通浏览器视频或普通音乐播放器。");
         root.addView(hint, matchWrap());
 
         setContentView(wrapScroll(root));
@@ -411,23 +421,26 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "请先允许麦克风/音频录制权限，然后再点一次启动推送", Toast.LENGTH_LONG).show();
             return;
         }
-        String host = getHostText();
-        if (host.isEmpty()) {
-            Toast.makeText(this, "请先搜索并选择接收端，或手动输入 IP", Toast.LENGTH_LONG).show();
+        String hosts = getHostsText();
+        if (Protocol.parseHosts(hosts).isEmpty()) {
+            Toast.makeText(this, "请先搜索并选择至少一个接收端，或手动输入 IP", Toast.LENGTH_LONG).show();
             startDiscovery(true);
             return;
         }
-        beginProjectionRequest(host);
+        beginProjectionRequest(hosts);
     }
 
-    private void beginProjectionRequest(String host) {
-        host = host == null ? "" : host.trim();
-        if (host.isEmpty()) {
+    private void beginProjectionRequest(String hostsText) {
+        String normalized = Protocol.normalizeHosts(hostsText);
+        if (Protocol.parseHosts(normalized).isEmpty()) {
             Toast.makeText(this, "没有可用的接收端 IP", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (hostInput != null) hostInput.setText(host);
-        getPrefs().edit().putString(KEY_LAST_HOST, host).apply();
+        setHostsText(normalized);
+        getPrefs().edit()
+                .putString(KEY_LAST_HOST, firstHost(normalized))
+                .putString(KEY_SELECTED_HOSTS, normalized)
+                .apply();
         startActivityForResult(projectionManager.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION);
     }
 
@@ -461,15 +474,19 @@ public class MainActivity extends Activity {
                 discoveredDevices.addAll(finalDevices);
                 renderDeviceList();
                 if (!finalDevices.isEmpty()) {
-                    Discovery.Device first = finalDevices.get(0);
-                    setHostText(first.host);
-                    getPrefs().edit().putString(KEY_LAST_HOST, first.host).apply();
+                    if (getSelectedHostList().isEmpty()) {
+                        for (Discovery.Device device : finalDevices) {
+                            selectedHosts.add(device.host);
+                        }
+                        setHostsText(Protocol.joinHosts(new ArrayList<>(selectedHosts)));
+                    }
+                    renderDeviceList();
                     sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 200);
-                    senderMessage = "已发现 " + finalDevices.size() + " 台接收端，请从列表中选择；已默认选择第一台。";
+                    senderMessage = "已发现 " + finalDevices.size() + " 台接收端；已选择 " + getSelectedHostList().size() + " 台，可点列表增减。";
                     Toast.makeText(this, "发现 " + finalDevices.size() + " 台接收端", Toast.LENGTH_SHORT).show();
-                    if (startSenderAfterFound) beginProjectionRequest(first.host);
+                    if (startSenderAfterFound) beginProjectionRequest(getHostsText());
                 } else {
-                    String msg = "没有搜到接收端。请确认目标 Android 设备已启动接收端，并且两台设备在同一个 Wi-Fi。";
+                    String msg = "没有搜到接收端。请确认目标 Android / Windows 设备已启动接收端，并且设备在同一个 Wi-Fi。";
                     if (finalError != null) msg += " 错误：" + finalError.getClass().getSimpleName();
                     senderMessage = msg;
                     Toast.makeText(this, "没有搜到接收端", Toast.LENGTH_LONG).show();
@@ -492,19 +509,49 @@ public class MainActivity extends Activity {
             deviceListLayout.addView(emptyText, matchWrap());
             return;
         }
-        TextView listTitle = bodyText("搜索结果：点击设备即可选择");
+        TextView listTitle = bodyText("搜索结果：点击设备可选择 / 取消选择");
         deviceListLayout.addView(listTitle, matchWrap());
+
+        Button selectAllButton = new Button(this);
+        selectAllButton.setText("选择全部搜索结果");
+        selectAllButton.setEnabled(!senderRunning);
+        selectAllButton.setOnClickListener(v -> {
+            syncSelectedHostsFromInput();
+            for (Discovery.Device device : discoveredDevices) {
+                selectedHosts.add(device.host);
+            }
+            setHostsText(Protocol.joinHosts(new ArrayList<>(selectedHosts)));
+            sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 200);
+            senderMessage = "已选择全部搜索结果，共 " + getSelectedHostList().size() + " 台接收端。";
+            renderDeviceList();
+            updateControls();
+        });
+        deviceListLayout.addView(selectAllButton, matchWrap());
+
+        Button clearButton = new Button(this);
+        clearButton.setText("清空已选接收端");
+        clearButton.setEnabled(!senderRunning);
+        clearButton.setOnClickListener(v -> {
+            setHostsText("");
+            senderMessage = "已清空接收端选择。";
+            renderDeviceList();
+            updateControls();
+        });
+        deviceListLayout.addView(clearButton, matchWrap());
+
         for (int i = 0; i < discoveredDevices.size(); i++) {
             Discovery.Device device = discoveredDevices.get(i);
             Button item = new Button(this);
             item.setAllCaps(false);
             item.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-            item.setText((i + 1) + ". " + device.name + "\n" + device.host + ":" + Protocol.PORT);
+            boolean selected = isHostSelected(device.host);
+            item.setText((selected ? "[已选择] " : "[未选择] ") + (i + 1) + ". " + device.name + "\n" + device.host + ":" + Protocol.PORT);
+            item.setEnabled(!senderRunning);
             item.setOnClickListener(v -> {
-                setHostText(device.host);
-                getPrefs().edit().putString(KEY_LAST_HOST, device.host).apply();
+                toggleSelectedHost(device.host);
                 sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 200);
-                senderMessage = "已选择接收端：" + device.name + " / " + device.host;
+                senderMessage = "当前已选择 " + getSelectedHostList().size() + " 台接收端。";
+                renderDeviceList();
                 updateControls();
             });
             deviceListLayout.addView(item, matchWrap());
@@ -519,17 +566,18 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "未获得系统音频采集权限", Toast.LENGTH_LONG).show();
                 return;
             }
-            String host = getHostText();
+            String hosts = getHostsText();
             Intent service = new Intent(this, SenderService.class).setAction(SenderService.ACTION_START);
-            service.putExtra(SenderService.EXTRA_HOST, host);
+            service.putExtra(SenderService.EXTRA_HOST, firstHost(hosts));
+            service.putExtra(SenderService.EXTRA_HOSTS, hosts);
             service.putExtra(SenderService.EXTRA_RESULT_CODE, resultCode);
             service.putExtra(SenderService.EXTRA_RESULT_DATA, data);
             startCompatService(service);
             senderRunning = true;
             senderStreaming = false;
-            senderHost = host;
+            senderHost = hosts;
             sendReceiverVolumeSoon(getSavedReceiverVolumePercent(), 500);
-            senderMessage = "发送端已启动，正在连接 " + host + "...";
+            senderMessage = "发送端已启动，正在连接 " + Protocol.parseHosts(hosts).size() + " 台接收端...";
             updateControls();
             Toast.makeText(this, "发送端已启动", Toast.LENGTH_SHORT).show();
         }
@@ -607,26 +655,29 @@ public class MainActivity extends Activity {
         }
 
         if (selectedDeviceText != null) {
-            String host = getHostText();
-            if (host.isEmpty()) {
+            List<String> hosts = getSelectedHostList();
+            if (hosts.isEmpty()) {
                 selectedDeviceText.setText("当前选择：未选择接收端");
             } else {
-                selectedDeviceText.setText("当前选择：" + host + ":" + Protocol.PORT);
+                selectedDeviceText.setText("当前选择：" + hosts.size() + " 台接收端\n" + Protocol.joinHosts(hosts));
             }
         }
 
         updateReceiverVolumeUi();
 
         if (senderToggleButton != null) {
-            String host = getHostText();
+            List<String> hosts = getSelectedHostList();
             if (senderRunning) {
                 senderToggleButton.setText("停止推送");
                 senderToggleButton.setEnabled(true);
-            } else if (host.isEmpty()) {
-                senderToggleButton.setText("请选择设备或输入 IP 后启动推送");
+            } else if (hosts.isEmpty()) {
+                senderToggleButton.setText("请选择至少一台设备或输入 IP 后启动推送");
                 senderToggleButton.setEnabled(false);
+            } else if (hosts.size() == 1) {
+                senderToggleButton.setText("启动推送到 " + hosts.get(0));
+                senderToggleButton.setEnabled(!discovering);
             } else {
-                senderToggleButton.setText("启动推送到 " + host);
+                senderToggleButton.setText("启动一对多推送（" + hosts.size() + " 台）");
                 senderToggleButton.setEnabled(!discovering);
             }
         }
@@ -639,18 +690,18 @@ public class MainActivity extends Activity {
     private void updateReceiverVolumeUi() {
         if (receiverVolumeText == null && receiverVolumeSeekBar == null) return;
         int volume = getSavedReceiverVolumePercent();
-        String host = getHostText();
+        List<String> hosts = getSelectedHostList();
         if (receiverVolumeText != null) {
-            String suffix = host.isEmpty()
+            String suffix = hosts.isEmpty()
                     ? "（请先选择接收端）"
-                    : "（控制 " + host + " 的应用内播放音量）";
+                    : "（控制已选择的 " + hosts.size() + " 台接收端）";
             receiverVolumeText.setText("接收端音量：" + volume + "% " + suffix);
         }
         if (receiverVolumeSeekBar != null) {
             if (receiverVolumeSeekBar.getProgress() != volume) {
                 receiverVolumeSeekBar.setProgress(volume);
             }
-            receiverVolumeSeekBar.setEnabled(!host.isEmpty());
+            receiverVolumeSeekBar.setEnabled(!hosts.isEmpty());
         }
     }
 
@@ -672,46 +723,85 @@ public class MainActivity extends Activity {
     }
 
     private void sendReceiverVolumeCommand(int volumePercent) {
-        String host = getHostText();
-        if (host.isEmpty()) {
+        List<String> hosts = getSelectedHostList();
+        if (hosts.isEmpty()) {
             senderMessage = "请先选择接收端，再调节接收端音量。";
             updateControls();
             return;
         }
         int volume = Protocol.clampVolume(volumePercent);
         new Thread(() -> {
-            boolean ok = false;
-            Exception error = null;
-            try (Socket s = new Socket()) {
-                s.connect(new InetSocketAddress(host, Protocol.CONTROL_PORT), 1200);
-                s.setTcpNoDelay(true);
-                DataOutputStream out = new DataOutputStream(s.getOutputStream());
-                Protocol.writeVolumeCommand(out, volume);
-                ok = true;
-            } catch (Exception e) {
-                error = e;
+            int okCount = 0;
+            int failCount = 0;
+            for (String host : hosts) {
+                try (Socket s = new Socket()) {
+                    s.connect(new InetSocketAddress(host, Protocol.CONTROL_PORT), 1200);
+                    s.setTcpNoDelay(true);
+                    DataOutputStream out = new DataOutputStream(s.getOutputStream());
+                    Protocol.writeVolumeCommand(out, volume);
+                    okCount++;
+                } catch (Exception e) {
+                    failCount++;
+                }
             }
-            boolean finalOk = ok;
-            Exception finalError = error;
+            int finalOkCount = okCount;
+            int finalFailCount = failCount;
             mainHandler.post(() -> {
-                if (finalOk) {
-                    senderMessage = "已发送接收端音量：" + volume + "%";
+                if (finalFailCount == 0) {
+                    senderMessage = "已向 " + finalOkCount + " 台接收端发送音量：" + volume + "%";
                 } else {
-                    String reason = finalError == null ? "未知错误" : finalError.getClass().getSimpleName();
-                    senderMessage = "接收端音量命令发送失败：" + reason + "。请确认接收端已启动且在同一 Wi-Fi。";
+                    senderMessage = "音量命令完成：成功 " + finalOkCount + " 台，失败 " + finalFailCount + " 台。请确认接收端已启动且在同一 Wi-Fi。";
                 }
                 updateControls();
             });
         }, "wifi-speaker-volume-send").start();
     }
 
-    private String getHostText() {
-        if (hostInput != null) return hostInput.getText().toString().trim();
-        return getPrefs().getString(KEY_LAST_HOST, "").trim();
+    private String getHostsText() {
+        if (hostInput != null) return Protocol.normalizeHosts(hostInput.getText().toString());
+        return Protocol.normalizeHosts(getPrefs().getString(KEY_SELECTED_HOSTS, getPrefs().getString(KEY_LAST_HOST, "")));
     }
 
-    private void setHostText(String host) {
-        if (hostInput != null) hostInput.setText(host == null ? "" : host.trim());
+    private List<String> getSelectedHostList() {
+        return Protocol.parseHosts(getHostsText());
+    }
+
+    private void syncSelectedHostsFromInput() {
+        selectedHosts.clear();
+        selectedHosts.addAll(Protocol.parseHosts(hostInput == null ? getHostsText() : hostInput.getText().toString()));
+    }
+
+    private void setHostsText(String hosts) {
+        String normalized = Protocol.normalizeHosts(hosts);
+        selectedHosts.clear();
+        selectedHosts.addAll(Protocol.parseHosts(normalized));
+        if (hostInput != null) hostInput.setText(normalized);
+        getPrefs().edit()
+                .putString(KEY_LAST_HOST, firstHost(normalized))
+                .putString(KEY_SELECTED_HOSTS, normalized)
+                .apply();
+    }
+
+    private void toggleSelectedHost(String host) {
+        String value = host == null ? "" : host.trim();
+        if (value.isEmpty()) return;
+        syncSelectedHostsFromInput();
+        if (selectedHosts.contains(value)) {
+            selectedHosts.remove(value);
+        } else {
+            selectedHosts.add(value);
+        }
+        setHostsText(Protocol.joinHosts(new ArrayList<>(selectedHosts)));
+    }
+
+    private boolean isHostSelected(String host) {
+        syncSelectedHostsFromInput();
+        return selectedHosts.contains(host == null ? "" : host.trim());
+    }
+
+    private String firstHost(String hostsText) {
+        List<String> hosts = Protocol.parseHosts(hostsText);
+        return hosts.isEmpty() ? "" : hosts.get(0);
     }
 
     private String safe(String text) {

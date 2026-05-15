@@ -1,47 +1,50 @@
-# 不安装 Android Studio 打包 APK
+# 不安装 Android Studio 构建 APK
 
-## 方法：GitHub Actions 在线打包
+本项目已经包含 GitHub Actions 工作流，可以在 GitHub 云端构建 debug APK。
 
-1. 在 GitHub 创建仓库。
-2. 把本目录内容上传到仓库根目录，确保根目录下能直接看到：
+## 更新源码
 
-```text
-app/
-.github/
-build.gradle
-settings.gradle
-README.md
+1. 打开 GitHub Desktop。
+2. 选择 `WifiSpeakerMVP` 仓库。
+3. 点击 `Repository -> Show in Explorer` 打开本地仓库目录。
+4. 删除旧源码文件，但不要删除 `.git` 文件夹。
+5. 解压新版 ZIP，把里面 `WifiSpeakerMVP` 文件夹中的内容复制到仓库根目录。
+6. 在 GitHub Desktop 中提交：`Release v0.3.5`。
+7. 点击 `Push origin`。
+
+## 云端构建
+
+1. 打开 GitHub 仓库网页。
+2. 进入 `Actions -> Build Android APK`。
+3. 等待最新构建变成绿色对勾。
+4. 点进构建记录。
+5. 在页面底部 `Artifacts` 下载 `WifiSpeakerMVP-v0.3.5-debug-apk`。
+6. 解压后得到 `app-debug.apk`。
+7. 建议重命名为 `WifiSpeakerMVP-v0.3.5-debug.apk`。
+
+## v0.3.5 使用重点
+
+- 发送端支持同时选择多个接收端。
+- 搜索列表中的设备可以点击选择或取消选择。
+- 手动输入框支持多个 IP，用逗号、空格或换行分隔。
+- 音量滑条会控制所有已选择接收端的应用内播放音量。
+
+## Windows 端云端构建
+
+v0.3.5 起仓库还包含 Windows 端命令行程序。
+
+1. 打开 GitHub 仓库网页。
+2. 进入 `Actions -> Build Windows App`。
+3. 等待最新构建变成绿色对勾。
+4. 点进构建记录。
+5. 在页面底部 `Artifacts` 下载 `WifiSpeakerMVP-v0.3.5-windows-x64`。
+6. 解压后得到 `WifiSpeaker.Win.exe` 以及运行所需文件。
+
+Windows 端用法：
+
+```powershell
+.\WifiSpeaker.Win.exe receiver
+.\WifiSpeaker.Win.exe discover
+.\WifiSpeaker.Win.exe send 192.168.1.35,192.168.1.36
+.\WifiSpeaker.Win.exe volume 60 192.168.1.35,192.168.1.36
 ```
-
-不要多套一层 `WifiSpeakerMVP/` 文件夹。
-
-3. 进入仓库的 `Actions`。
-4. 点击 `Build Android APK`。
-5. 点击 `Run workflow`。
-6. 等待构建完成。
-7. 在构建详情页面底部下载 `Artifacts`。
-8. 解压后得到 `app-debug.apk`。
-9. 把 APK 安装到两台 Android 设备。
-
-## 更新已有仓库
-
-如果你已经用 GitHub Desktop 管理仓库：
-
-1. 先确认当前可用版本已经 `Commit to main`。
-2. 可选：给当前版本打 tag，例如 `v0.3.0`。
-3. 打开本地仓库目录。
-4. 删除旧的源码文件和目录，但不要删除 `.git`。
-5. 把新版源码复制到仓库根目录。
-6. 在 GitHub Desktop 中提交：`Release v0.3.4`。
-7. `Push origin`。
-8. 等 GitHub Actions 自动重新打包。
-
-## v0.3.4 使用重点
-
-- 主界面先选角色。
-- 其中一台 Android 设备选择接收端并启动。
-- 另一台 Android 设备选择发送端，搜索设备会出现列表。
-- 点击列表中的设备后，再启动推送。
-- 运行中按钮会自动切换成停止按钮。
-- App 保留保守系统栏处理，避免界面内容被状态栏遮挡。
-- 发送端界面可以调节接收端应用内播放音量，不改变发送端系统音量。

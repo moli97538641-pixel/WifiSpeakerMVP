@@ -148,7 +148,8 @@ public class ReceiverService extends Service {
                 channelOutMask,
                 AudioFormat.ENCODING_PCM_16BIT
         );
-        int bufferBytes = Math.max(minBytes * 4, 32 * 1024);
+        int lowLatencyBytes = bytesForMs(header.sampleRate, header.channelCount, header.bitsPerSample, 90);
+        int bufferBytes = Math.max(minBytes, lowLatencyBytes);
 
         AudioFormat outputFormat = new AudioFormat.Builder()
                 .setSampleRate(header.sampleRate)
@@ -161,28 +162,52 @@ public class ReceiverService extends Service {
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                 .build();
 
-        audioTrack = new AudioTrack.Builder()
+        AudioTrack.Builder builder = new AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(outputFormat)
                 .setBufferSizeInBytes(bufferBytes)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build();
+                .setTransferMode(AudioTrack.MODE_STREAM);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY);
+        }
+        audioTrack = builder.build();
 
         applyPlaybackVolume();
         audioTrack.play();
-        byte[] buffer = new byte[16 * 1024];
+
+        long submittedFrames = 0;
+        long droppedFrames = 0;
         while (running.get() && !Thread.currentThread().isInterrupted()) {
-            int n = in.read(buffer);
-            if (n < 0) break;
-            if (n > 0) {
-                int written = 0;
-                while (written < n && running.get()) {
-                    int ret = audioTrack.write(buffer, written, n - written, AudioTrack.WRITE_BLOCKING);
-                    if (ret < 0) throw new IllegalStateException("AudioTrack write failed: " + ret);
-                    written += ret;
+            Protocol.AudioFrame frame = Protocol.readAudioFrame(in);
+            long queuedMs = getQueuedAudioMs(audioTrack, submittedFrames, header.sampleRate);
+            if (queuedMs > 180) {
+                droppedFrames += frame.durationFrames;
+                if ((droppedFrames % (header.sampleRate * 2L)) < frame.durationFrames) {
+                    Log.w(TAG, "Dropping stale audio to reduce latency, queuedMs=" + queuedMs);
                 }
+                continue;
+            }
+
+            int written = 0;
+            byte[] payload = frame.payload;
+            while (written < payload.length && running.get()) {
+                int ret = audioTrack.write(payload, written, payload.length - written, AudioTrack.WRITE_BLOCKING);
+                if (ret < 0) throw new IllegalStateException("AudioTrack write failed: " + ret);
+                written += ret;
+                submittedFrames += ret / Protocol.bytesPerFrame(header.channelCount, header.bitsPerSample);
             }
         }
+    }
+
+    private int bytesForMs(int sampleRate, int channelCount, int bitsPerSample, int ms) {
+        return sampleRate * ms / 1000 * Protocol.bytesPerFrame(channelCount, bitsPerSample);
+    }
+
+    private long getQueuedAudioMs(AudioTrack track, long submittedFrames, int sampleRate) {
+        if (track == null || sampleRate <= 0) return 0;
+        long playedFrames = track.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+        long queuedFrames = Math.max(0, submittedFrames - playedFrames);
+        return queuedFrames * 1000L / sampleRate;
     }
 
     private void runControlServer() {

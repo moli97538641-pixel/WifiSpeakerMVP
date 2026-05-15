@@ -1,0 +1,31 @@
+name: Build Windows App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore windows/WifiSpeaker.Win/WifiSpeaker.Win.csproj
+
+      - name: Publish win-x64 single file
+        run: dotnet publish windows/WifiSpeaker.Win/WifiSpeaker.Win.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o out/win-x64
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WifiSpeakerMVP-v0.3.5-windows-x64
+          path: out/win-x64/**
