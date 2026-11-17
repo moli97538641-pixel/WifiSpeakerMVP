@@ -1,14 +1,5 @@
 plugins { id 'com.android.application' }
-
-android {
-    namespace 'com.example.wifispeaker'
-    compileSdk 35
-
-    defaultConfig {
-        applicationId 'com.example.wifispeaker'
-        minSdk 23
-        targetSdk 34
-        versionCode 10
-        versionName '0.3.6'
-    }
+android { namespace 'com.moli.photodirect'; compileSdk 35
+ defaultConfig { applicationId 'com.moli.photodirect'; minSdk 26; targetSdk 32; versionCode 3; versionName '1.2' }
+ compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
